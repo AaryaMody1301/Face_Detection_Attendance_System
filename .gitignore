@@ -1,1 +1,33 @@
-/.idea
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+.env
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Project specific
+data/*.db
+logs/*.log
+known_faces/*
+!known_faces/.gitkeep
+uploads/*
+!uploads/.gitkeep

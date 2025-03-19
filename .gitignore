@@ -1,33 +1,36 @@
-# IDE specific files
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# Python
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-.Python
-venv/
-ENV/
-.env
 
 # Distribution / packaging
 dist/
 build/
 *.egg-info/
 
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
+# Virtual environment
+venv/
+env/
+ENV/
 
-# Project specific
-data/*.db
-logs/*.log
-known_faces/*
-!known_faces/.gitkeep
-uploads/*
-!uploads/.gitkeep
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Project-specific files
+TrainingImageLabel/*.yml
+tempCodeRunnerFile.py
+*.log
+
+# Image and training data
+# Uncomment these if you want to exclude this data from version control
+# TrainingImage/*.jpg
+# TrainingImage/*.png
+# Attendance/*.csv
+# StudentDetails/*.csv
+
+# OS-specific files
+.DS_Store
+Thumbs.db

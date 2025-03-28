@@ -5,6 +5,7 @@ import os
 import csv
 import datetime
 import pandas as pd
+import shutil
 
 
 class AttendanceDB:
@@ -100,13 +101,13 @@ class AttendanceDB:
         try:
             with open(file_path, 'w', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow(['Enrollment', 'Name', 'Date', 'Time'])
+                writer.writerow(['Enrollment', 'Name', 'Date', 'Time', 'Status'])
             return file_path
         except Exception as e:
             print(f"Error creating attendance record: {e}")
             return None
     
-    def mark_attendance(self, enrollment, name, subject=None, date=None, time=None, file_path=None):
+    def mark_attendance(self, enrollment, name, subject=None, date=None, time=None, file_path=None, status="Present"):
         """
         Mark attendance for a student
         
@@ -117,6 +118,7 @@ class AttendanceDB:
             date (str, optional): Date in YYYY-MM-DD format
             time (str, optional): Time in HH-MM-SS format
             file_path (str, optional): Path to attendance file
+            status (str, optional): Attendance status (Present, Late, etc.)
             
         Returns:
             bool: True if attendance was marked successfully
@@ -147,8 +149,8 @@ class AttendanceDB:
             with open(file_path, 'a', newline='') as f:
                 writer = csv.writer(f)
                 if not file_exists:
-                    writer.writerow(['Enrollment', 'Name', 'Date', 'Time'])
-                writer.writerow([enrollment, name, date, time])
+                    writer.writerow(['Enrollment', 'Name', 'Date', 'Time', 'Status'])
+                writer.writerow([enrollment, name, date, time, status])
             return True
         except Exception as e:
             print(f"Error marking attendance: {e}")
@@ -182,4 +184,127 @@ class AttendanceDB:
                 except Exception as e:
                     print(f"Error reading {file}: {e}")
         
-        return attendance_records 
+        return attendance_records
+        
+    def get_attendance_record(self, file_path):
+        """
+        Get a specific attendance record
+        
+        Args:
+            file_path (str): Path to attendance file
+            
+        Returns:
+            pandas.DataFrame: DataFrame containing attendance record
+        """
+        try:
+            if os.path.isfile(file_path):
+                return pd.read_csv(file_path)
+            return None
+        except Exception as e:
+            print(f"Error reading attendance record: {e}")
+            return None
+            
+    def update_attendance_record(self, file_path, attendance_df):
+        """
+        Update the attendance record with the provided DataFrame
+        
+        Args:
+            file_path (str): Path to attendance file
+            attendance_df (pandas.DataFrame): DataFrame containing updated attendance record
+            
+        Returns:
+            bool: True if attendance record was updated successfully
+        """
+        try:
+            # Create backup of original file
+            backup_file = file_path + '.bak'
+            if os.path.isfile(file_path):
+                shutil.copy2(file_path, backup_file)
+                
+            # Write updated DataFrame to file
+            attendance_df.to_csv(file_path, index=False)
+            return True
+        except Exception as e:
+            print(f"Error updating attendance record: {e}")
+            # Try to restore from backup if update failed
+            if os.path.isfile(backup_file):
+                shutil.copy2(backup_file, file_path)
+            return False
+            
+    def add_student_to_attendance(self, file_path, enrollment, name, status="Present"):
+        """
+        Add a student to an existing attendance record
+        
+        Args:
+            file_path (str): Path to attendance file
+            enrollment (str): Student enrollment number
+            name (str): Student name
+            status (str): Attendance status
+            
+        Returns:
+            bool: True if student was added successfully
+        """
+        # Get current timestamp
+        now = datetime.datetime.now()
+        date = now.strftime("%Y-%m-%d")
+        time = now.strftime("%H:%M:%S")
+        
+        return self.mark_attendance(enrollment, name, file_path=file_path, 
+                                   date=date, time=time, status=status)
+                                   
+    def remove_student_from_attendance(self, file_path, enrollment):
+        """
+        Remove a student from an attendance record
+        
+        Args:
+            file_path (str): Path to attendance file
+            enrollment (str): Student enrollment number
+            
+        Returns:
+            bool: True if student was removed successfully
+        """
+        try:
+            # Read existing attendance record
+            attendance_df = self.get_attendance_record(file_path)
+            if attendance_df is None:
+                return False
+                
+            # Filter out the student
+            updated_df = attendance_df[attendance_df['Enrollment'] != enrollment]
+            
+            # Update the file
+            return self.update_attendance_record(file_path, updated_df)
+        except Exception as e:
+            print(f"Error removing student from attendance: {e}")
+            return False
+            
+    def update_student_status(self, file_path, enrollment, status):
+        """
+        Update a student's attendance status
+        
+        Args:
+            file_path (str): Path to attendance file
+            enrollment (str): Student enrollment number
+            status (str): New attendance status
+            
+        Returns:
+            bool: True if status was updated successfully
+        """
+        try:
+            # Read existing attendance record
+            attendance_df = self.get_attendance_record(file_path)
+            if attendance_df is None:
+                return False
+                
+            # Check if the student exists
+            if 'Status' not in attendance_df.columns:
+                attendance_df['Status'] = 'Present'
+                
+            # Update the status
+            attendance_df.loc[attendance_df['Enrollment'] == enrollment, 'Status'] = status
+            
+            # Update the file
+            return self.update_attendance_record(file_path, attendance_df)
+        except Exception as e:
+            print(f"Error updating student status: {e}")
+            return False

@@ -12,13 +12,16 @@ import time
 import threading
 import logging
 import pandas as pd
+import customtkinter as ctk  # Import CustomTkinter
 
 from src.face_recognition.detector import FaceDetector
-from src.database.db_handler import AttendanceDB
+from src.database.sqlite_handler import SQLiteHandler  # Import SQLiteHandler
 from src.models.student import Student
 from src.utils.image_utils import draw_rectangle
 from src.utils.attendance_analytics import AttendanceAnalytics
 from src.ui.analytics_dashboard import AnalyticsDashboard
+from src.utils.cloud_sync import CloudSync  # Import CloudSync
+from src.utils.camera_manager import CameraManager  # Import CameraManager
 
 # Set up logging
 logging.basicConfig(
@@ -50,12 +53,14 @@ class FaceAttendanceApp:
             print("Initializing face detector...")
             self.face_detector = FaceDetector()
             print("Initializing database...")
-            self.db = AttendanceDB()
+            self.db = SQLiteHandler()  # Use SQLiteHandler
             
-            # Video capture
+            # Camera and capture variables
             self.cam = None
             self.is_capturing = False
             self.capture_thread = None
+            # Initialize camera manager
+            self.camera_manager = CameraManager()
             
             # Current subject
             self.current_subject = None
@@ -67,6 +72,13 @@ class FaceAttendanceApp:
                 self.face_detector.load_model(model_path)
             else:
                 print(f"Model file not found: {model_path}")
+            
+            print("Initializing cloud sync...")
+            self.cloud_sync = CloudSync(
+                bucket_name='your-bucket-name',
+                aws_access_key='your-access-key',
+                aws_secret_key='your-secret-key'
+            )
             
             # Create menu bar
             self.create_menu_bar()
@@ -88,10 +100,28 @@ class FaceAttendanceApp:
         # File menu
         file_menu = tk.Menu(menu_bar, tearoff=0)
         menu_bar.add_cascade(label="File", menu=file_menu)
+        file_menu.add_command(label="Import Student Details", command=self.import_student_details)
+        file_menu.add_command(label="Upload Student Images", command=self.upload_student_images)
+        file_menu.add_command(label="Manage Subjects", command=self.manage_subjects)
+        file_menu.add_separator()
         file_menu.add_command(label="Organize Folders", command=self.organize_folders)
         file_menu.add_command(label="Enhanced Cleanup", command=self.enhanced_cleanup)
+        file_menu.add_command(label="Backup to Cloud", command=self.backup_to_cloud)
+        file_menu.add_command(label="Restore from Cloud", command=self.restore_from_cloud)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.on_closing)
+        
+        # Analytics menu
+        analytics_menu = tk.Menu(menu_bar, tearoff=0)
+        menu_bar.add_cascade(label="Analytics", menu=analytics_menu)
+        analytics_menu.add_command(label="View Dashboard", command=self.open_analytics_dashboard)
+        analytics_menu.add_command(label="Generate Reports", command=self.generate_reports)
+        
+        # Settings menu
+        settings_menu = tk.Menu(menu_bar, tearoff=0)
+        menu_bar.add_cascade(label="Settings", menu=settings_menu)
+        settings_menu.add_command(label="Application Settings", command=self.open_settings)
+        settings_menu.add_command(label="Camera Settings", command=self.camera_settings)
         
         # Help menu
         help_menu = tk.Menu(menu_bar, tearoff=0)
@@ -244,6 +274,11 @@ that automates the process of marking attendance.
                                      command=self.track_images, bg="#FF9800", fg="white",
                                      **button_style)
         self.track_img_btn.grid(row=0, column=2, padx=10, pady=10)
+        
+        self.group_attendance_btn = tk.Button(control_frame, text="Group Attendance", 
+                                     command=self.group_attendance, bg="#673AB7", fg="white",
+                                     **button_style)
+        self.group_attendance_btn.grid(row=0, column=3, padx=10, pady=10)
         
         # Right frame (for student details)
         right_frame = tk.Frame(self.main_frame, bg="grey80", width=350)
@@ -640,134 +675,51 @@ that automates the process of marking attendance.
         def tracking_thread():
             nonlocal recognized_students
             start_time = time.time()
-            
             while self.is_capturing:
                 try:
                     ret, img = self.cam.read()
                     if not ret:
                         self.update_status("Camera error. Stopping tracking.")
                         break
-                    
-                    # Create a copy of the image for display
                     display_img = img.copy()
-                    
-                    # Convert to grayscale for face detection
-                    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                    
-                    # Apply histogram equalization for better contrast
-                    gray = cv2.equalizeHist(gray)
-                    
-                    # Detect faces
-                    faces = self.face_detector.detect_faces(gray)
-                    
-                    if len(faces) == 0:
-                        # No faces detected, just display the frame
-                        self.show_frame(display_img)
-                        continue
-                    
-                    # Process each detected face
-                    for (x, y, w, h) in faces:
-                        # Get face region
-                        face_roi = gray[y:y+h, x:x+w]
-                        
-                        # Standardize face size for more consistent recognition
-                        face_roi = cv2.resize(face_roi, (100, 100))
-                        
-                        # Recognize face
-                        face_id, conf = self.face_detector.recognizer.predict(face_roi)
-                        
-                        # Process recognition result
-                        if str(face_id) not in recognition_buffer:
-                            recognition_buffer[str(face_id)] = []
-                        
-                        # Add current confidence to buffer (lower is better for OpenCV LBPH)
-                        if conf < 100:  # Only add reasonable confidences
-                            recognition_buffer[str(face_id)].append(conf)
-                            
-                            # Limit buffer size
-                            if len(recognition_buffer[str(face_id)]) > buffer_size:
-                                recognition_buffer[str(face_id)] = recognition_buffer[str(face_id)][-buffer_size:]
-                        
-                        # Check if we have enough frames with good confidence for this face
-                        good_frames = sum(1 for c in recognition_buffer[str(face_id)] if c < confidence_threshold)
-                        
-                        # If we have enough good frames, mark attendance
-                        if good_frames >= min_recognized_frames:
-                            # Find student name from ID
-                            student_data = students_df[students_df['Enrollment'] == str(face_id)]
+                    face_locations, face_names = self.face_detector.recognize_faces(img)
+                    for (top, right, bottom, left), name in zip(face_locations, face_names):
+                        if name != "Unknown":
+                            student_data = students_df[students_df['Name'] == name]
                             if not student_data.empty:
-                                student_name = student_data.iloc[0]['Name']
-                                
-                                # Mark attendance if not already marked
-                                student_key = f"{face_id}_{student_name}"
+                                face_id = student_data.iloc[0]['Enrollment']
+                                student_key = f"{face_id}_{name}"
                                 if student_key not in recognized_students:
-                                    self.db.mark_attendance(str(face_id), student_name, file_path=attendance_file)
+                                    self.db.mark_attendance(face_id, name, file_path=attendance_file)
                                     recognized_students[student_key] = True
-                                    self.update_status(f"✓ Marked attendance for {student_name}")
-                                
-                                # Display name on frame
-                                label = f"{student_name} ({face_id})"
-                                color = (0, 255, 0)  # Green for good match
-                            else:
-                                # Unknown student ID
-                                label = f"Unknown ID: {face_id}"
-                                color = (0, 165, 255)  # Orange for unknown ID
-                        else:
-                            # Not enough good frames yet
-                            label = "Processing..."
-                            if len(recognition_buffer[str(face_id)]) > 0:
-                                avg_conf = sum(recognition_buffer[str(face_id)]) / len(recognition_buffer[str(face_id)])
-                                label = f"Processing... ({good_frames}/{min_recognized_frames})"
-                            color = (255, 120, 0)  # Light blue for processing
-                        
-                        # Draw rectangle around face and display name
-                        cv2.rectangle(display_img, (x, y), (x+w, y+h), color, 2)
-                        
-                        # Calculate position for label (handle if on top edge)
-                        y_pos = y - 10 if y - 10 > 10 else y + h + 20
-                        cv2.putText(display_img, label, (x, y_pos),
-                                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-                    
-                    # Display attendance count on the image
+                                    self.update_status(f"✓ Marked attendance for {name}")
+                        label = f"{name}"
+                        color = (0, 255, 0) if name != "Unknown" else (0, 165, 255)
+                        cv2.rectangle(display_img, (left, top), (right, bottom), color, 2)
+                        y_pos = top - 10 if top - 10 > 10 else bottom + 20
+                        cv2.putText(display_img, label, (left, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
                     attendance_count = len(recognized_students)
                     attendance_text = f"Attendance Count: {attendance_count}"
-                    cv2.putText(display_img, attendance_text, (10, 30),
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.8, (50, 50, 255), 2)
-                    
-                    # Display the current subject
+                    cv2.putText(display_img, attendance_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (50, 50, 255), 2)
                     subject_text = f"Subject: {subject}"
-                    cv2.putText(display_img, subject_text, (10, 60),
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.7, (50, 50, 255), 2)
-                    
-                    # Display elapsed time
+                    cv2.putText(display_img, subject_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (50, 50, 255), 2)
                     elapsed_time = time.time() - start_time
                     time_text = f"Time: {int(elapsed_time)}s"
-                    cv2.putText(display_img, time_text, (10, 90),
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.7, (50, 50, 255), 2)
-                    
-                    # Display the video frame
+                    cv2.putText(display_img, time_text, (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (50, 50, 255), 2)
                     self.show_frame(display_img)
-                    
                 except Exception as e:
                     print(f"Error in tracking: {e}")
-                    time.sleep(0.1)  # Brief pause on error
-            
-            # Tracking has stopped
+                    time.sleep(0.1)
             attendance_count = len(recognized_students)
             self.update_status(f"Tracking stopped. {attendance_count} students marked present.")
-            
-            # Display summary when done
             if attendance_count > 0:
                 summary = f"Attendance Summary\n\nSubject: {subject}\nDate: {date}\nTime: {time_str}\n\nStudents Present ({attendance_count}):\n"
                 for student_key in recognized_students:
                     student_id, student_name = student_key.split("_", 1)
                     summary += f"• {student_name} (ID: {student_id})\n"
-                    
                 messagebox.showinfo("Attendance Complete", summary)
             else:
                 messagebox.showinfo("Attendance Complete", "No students were recognized during this session.")
-        
-        # Start the tracking thread
         self.capture_thread = threading.Thread(target=tracking_thread)
         self.capture_thread.daemon = True
         self.capture_thread.start()
@@ -808,7 +760,7 @@ that automates the process of marking attendance.
                 f.write("Enrollment,Name,Date,Time\n")
         
         # Mark attendance
-        success = self.db.mark_attendance(enrollment, name, file_path=file_path)
+        success = self.db.mark_attendance(enrollment, name, subject, date, time_str)
         
         if success:
             messagebox.showinfo("Success", "Attendance marked successfully")
@@ -982,51 +934,225 @@ that automates the process of marking attendance.
             print(f"Export error: {e}")
     
     def start_capture(self):
-        """Start video capture"""
+        """Start video capture using the CameraManager"""
+        try:
+            if not self.is_capturing:
+                logger.info("Starting camera capture")
+                
+                # Initialize camera manager if not already done
+                if not hasattr(self, 'camera_manager'):
+                    from src.utils.camera_manager import CameraManager
+                    self.camera_manager = CameraManager()
+                
+                # First try to get the preferred camera from settings
+                try:
+                    from src.utils.user_preferences import UserPreferences
+                    preferences = UserPreferences()
+                    preferences.load()
+                    preferred_device = preferences.get_preference("camera", "device", "Auto-detect (default)")
+                    
+                    # Extract camera index from setting
+                    if preferred_device != "Auto-detect (default)" and preferred_device != "Auto-detect (refreshed)":
+                        # Extract index from "Camera X"
+                        camera_id = int(preferred_device.split(" ")[1])
+                        
+                        # Try the specific camera first
+                        camera_result = self.camera_manager.get_camera(camera_id)
+                        
+                        if not camera_result.success:
+                            # If that fails, fall back to the best available camera
+                            self.update_status(f"Preferred camera {camera_id} not available. Trying fallback options...")
+                            camera_result = self.camera_manager.get_best_camera()
+                    else:
+                        # Use the best available camera
+                        camera_result = self.camera_manager.get_best_camera()
+                except (ImportError, Exception) as e:
+                    logger.warning(f"Could not load preferences: {e}. Using default camera.")
+                    camera_result = self.camera_manager.get_best_camera()
+                
+                if camera_result.success:
+                    self.cam = camera_result.camera
+                    self.camera_id = camera_result.camera_id
+                    self.camera_info = camera_result.camera_info
+                    
+                    # Try to set camera properties if preferences exist
+                    try:
+                        # Get resolution preference
+                        resolution = preferences.get_preference("camera", "resolution", "640x480")
+                        width, height = map(int, resolution.split("x"))
+                        
+                        # Get FPS preference
+                        fps = preferences.get_preference("camera", "fps", 30)
+                        
+                        # Set properties
+                        import cv2
+                        self.cam.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                        self.cam.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                        self.cam.set(cv2.CAP_PROP_FPS, fps)
+                        
+                        logger.info(f"Camera settings applied: {width}x{height} at {fps} FPS")
+                    except Exception as e:
+                        logger.warning(f"Could not apply camera settings: {e}")
+                    
+                    logger.info(f"Using camera: {self.camera_info}")
+                    self.is_capturing = True
+                    
+                    # Start a thread to continuously update the video frame
+                    self.capture_thread = threading.Thread(target=self._update_frame, daemon=True)
+                    self.capture_thread.start()
+                    
+                    # Update UI elements
+                    self.camera_status.config(text=f"Camera: Active (ID: {self.camera_id})", fg="green")
+                    self.update_status(f"Camera started successfully: {self.camera_info}")
+                    
+                    # Enable the tracking start button
+                    self.toggle_start_button()
+                    
+                    return True
+                else:
+                    logger.error("Failed to initialize camera. No cameras available.")
+                    self.update_status("Error: No cameras available", error=True)
+                    messagebox.showerror("Camera Error", 
+                                         "Failed to initialize camera. Please check your camera connections.")
+                    return False
+            
+            return False
+        except Exception as e:
+            logger.exception(f"Error starting camera: {e}")
+            self.update_status(f"Camera error: {str(e)}", error=True)
+            messagebox.showerror("Camera Error", f"Failed to initialize camera: {str(e)}")
+            return False
+    
+    def stop_capture(self):
+        """Stop video capture and release resources"""
         try:
             if self.is_capturing:
-                return True  # Already capturing
+                logger.info("Stopping camera capture")
                 
-            # Try to open the camera
-            self.cam = cv2.VideoCapture(0)
-            if not self.cam.isOpened():
-                messagebox.showerror("Error", "Could not open camera")
-                return False
-            
-            # Set camera properties for better quality
-            self.cam.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            self.cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            self.cam.set(cv2.CAP_PROP_FPS, 30)
+                # Signal to the update thread to stop
+                self.is_capturing = False
                 
-            self.is_capturing = True
-            self.camera_status.config(text="Camera: Active", fg="green")
-            return True
+                # Wait for the capture thread to finish
+                if hasattr(self, 'capture_thread') and self.capture_thread is not None and self.capture_thread.is_alive():
+                    self.capture_thread.join(timeout=2.0)
+                    if self.capture_thread.is_alive():
+                        logger.warning("Capture thread did not terminate within timeout period")
+                
+                # Release camera resources
+                if hasattr(self, 'cam') and self.cam is not None:
+                    try:
+                        # Attempt to release the camera multiple times if needed
+                        release_attempts = 0
+                        max_attempts = 3
+                        while release_attempts < max_attempts:
+                            try:
+                                self.cam.release()
+                                break
+                            except Exception as release_err:
+                                release_attempts += 1
+                                logger.warning(f"Camera release attempt {release_attempts} failed: {release_err}")
+                                if release_attempts >= max_attempts:
+                                    raise
+                                time.sleep(0.2)  # Wait before retrying
+                                
+                        self.cam = None
+                        logger.info("Camera released successfully")
+                    except Exception as cam_err:
+                        logger.error(f"Failed to release camera: {cam_err}")
+                
+                # Clear camera references
+                self.camera_id = None
+                self.camera_info = None
+                
+                # Update UI elements
+                self.camera_status.config(text="Camera: Inactive", fg="red")
+                self.update_status("Camera stopped")
+                
+                # Reset the display frame
+                self._display_default_frame()
+                
+                # Disable the start tracking button if it exists
+                self.toggle_start_button()
+                
+                logger.info("Camera resources released successfully")
+                return True
+                
+            return False
         except Exception as e:
-            messagebox.showerror("Camera Error", f"Error starting camera: {e}")
-            self.is_capturing = False
-            self.camera_status.config(text="Camera: Error", fg="red")
+            logger.exception(f"Error stopping camera: {e}")
+            self.update_status(f"Error stopping camera: {str(e)}", error=True)
             return False
             
-    def stop_capture(self):
-        """Stop video capture"""
+    def _display_default_frame(self):
+        """Display the default frame when no camera is active"""
         try:
-            self.is_capturing = False
-            # Wait for thread to finish if it exists
-            if self.capture_thread and self.capture_thread.is_alive():
-                self.capture_thread.join(timeout=1.0)
+            # Clear existing widgets in the video frame
+            for widget in self.video_frame.winfo_children():
+                widget.destroy()
                 
-            # Release the camera
-            if self.cam is not None:
-                self.cam.release()
-                self.cam = None
-                
-            self.camera_status.config(text="Camera: Inactive", fg="black")
-            
-            # Clear the video frame and show message
-            self.clear_video_frame()
+            # Add default message
+            init_text = "Camera feed will appear here\nClick 'Take Images' to start"
+            init_label = tk.Label(self.video_frame, text=init_text, bg="black", fg="white",
+                                font=('times', 14))
+            init_label.pack(expand=True)
             
         except Exception as e:
-            print(f"Error stopping capture: {e}")
+            logger.exception(f"Error displaying default frame: {e}")
+            
+    def _update_frame(self):
+        """Update the video frame with the camera feed"""
+        try:
+            # Continue updating while capture is active
+            while self.is_capturing:
+                # Read a frame from the camera
+                ret, frame = self.cam.read()
+                
+                # If frame was successfully read
+                if ret:
+                    # Display the frame
+                    self.show_frame(frame)
+                else:
+                    logger.warning("Failed to read frame from camera")
+                    
+                    # Try to recover by reinitializing the camera
+                    if hasattr(self, 'camera_manager') and hasattr(self, 'camera_id'):
+                        try:
+                            # Try to get the same camera again
+                            camera_result = self.camera_manager.get_camera(self.camera_id)
+                            
+                            if (camera_result.success):
+                                logger.info(f"Successfully recovered camera connection to camera {self.camera_id}")
+                                self.cam = camera_result.camera
+                            else:
+                                # If that fails, try to get any camera
+                                logger.warning(f"Failed to recover camera {self.camera_id}, trying any available camera")
+                                camera_result = self.camera_manager.get_best_camera()
+                                
+                                if camera_result.success:
+                                    logger.info(f"Recovered with different camera: {camera_result.camera_info}")
+                                    self.cam = camera_result.camera
+                                    self.camera_id = camera_result.camera_id
+                                    self.camera_info = camera_result.camera_info
+                                    self.camera_status.config(text=f"Camera: Active (ID: {self.camera_id})", fg="green")
+                                else:
+                                    # If no camera is available, stop capturing
+                                    logger.error("Could not recover camera connection, stopping capture")
+                                    self.is_capturing = False
+                                    break
+                        except Exception as recovery_err:
+                            logger.error(f"Error during camera recovery: {recovery_err}")
+                            # Wait a bit before trying to read again
+                            time.sleep(0.5)
+                    else:
+                        # Wait a bit before trying to read again
+                        time.sleep(0.1)
+                
+                # Pause to avoid using too much CPU
+                time.sleep(0.03)  # ~30 FPS
+                
+        except Exception as e:
+            logger.exception(f"Error in update frame thread: {e}")
+            self.is_capturing = False
     
     def clear_video_frame(self):
         """Clear the video frame and display a message"""
@@ -1157,13 +1283,1212 @@ that automates the process of marking attendance.
         except Exception as e:
             messagebox.showerror("Error", f"Failed to run enhanced cleanup: {e}")
 
+    def backup_to_cloud(self):
+        attendance_files = [os.path.join('Attendance', f) for f in os.listdir('Attendance') if f.endswith('.csv')]
+        for file_path in attendance_files:
+            s3_path = f"attendance/{os.path.basename(file_path)}"
+            success, message = self.cloud_sync.upload_file(file_path, s3_path)
+            if success:
+                self.update_status(f"Uploaded {file_path} to cloud")
+            else:
+                self.update_status(f"Failed to upload {file_path}: {message}")
 
-def main():
-    """Main entry point of the application"""
-    root = tk.Tk()
-    app = FaceAttendanceApp(root)
-    root.mainloop()
+    def restore_from_cloud(self):
+        files, error = self.cloud_sync.list_files('attendance/')
+        if error:
+            self.update_status(f"Failed to list files: {error}")
+            return
+        for s3_path in files:
+            file_path = os.path.join('Attendance', os.path.basename(s3_path))
+            success, message = self.cloud_sync.download_file(s3_path, file_path)
+            if success:
+                self.update_status(f"Downloaded {s3_path} to {file_path}")
+            else:
+                self.update_status(f"Failed to download {s3_path}: {message}")
 
+    def import_student_details(self):
+        """Import student details from a CSV file"""
+        from tkinter import filedialog
+        import csv
+        
+        # Show file dialog
+        file_path = filedialog.askopenfilename(
+            title="Select Student Details CSV File",
+            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")],
+            initialdir=os.path.join(os.getcwd(), "StudentDetails")
+        )
+        
+        if not file_path:
+            return
+            
+        try:
+            # Read the CSV file
+            imported_students = []
+            duplicate_students = []
+            with open(file_path, 'r', newline='') as csvfile:
+                reader = csv.reader(csvfile)
+                headers = next(reader, None)  # Skip header row
+                
+                # Check if CSV has required columns
+                required_columns = ['Enrollment', 'Name']
+                if not headers or not all(col in headers for col in required_columns):
+                    messagebox.showerror(
+                        "Invalid CSV Format", 
+                        "The CSV file must have 'Enrollment' and 'Name' columns."
+                    )
+                    return
+                
+                # Find column indices
+                enrollment_idx = headers.index('Enrollment')
+                name_idx = headers.index('Name')
+                
+                # Process each row
+                for row in reader:
+                    if len(row) > max(enrollment_idx, name_idx):
+                        enrollment = row[enrollment_idx].strip()
+                        name = row[name_idx].strip()
+                        
+                        if enrollment and name:
+                            # Add student to database
+                            success = self.db.add_student(enrollment, name)
+                            if success:
+                                imported_students.append(f"{name} ({enrollment})")
+                            else:
+                                duplicate_students.append(f"{name} ({enrollment})")
+            
+            # Show results
+            if imported_students:
+                result_message = f"Successfully imported {len(imported_students)} students:\n\n"
+                result_message += "\n".join(imported_students[:10])  # Show first 10
+                if len(imported_students) > 10:
+                    result_message += f"\n...and {len(imported_students) - 10} more"
+                    
+                if duplicate_students:
+                    result_message += f"\n\nSkipped {len(duplicate_students)} duplicate students"
+                
+                messagebox.showinfo("Import Complete", result_message)
+                self.update_status(f"Imported {len(imported_students)} students")
+            else:
+                if duplicate_students:
+                    messagebox.showwarning(
+                        "Import Results", 
+                        f"No new students were imported. {len(duplicate_students)} students already exist in the database."
+                    )
+                else:
+                    messagebox.showwarning("Import Results", "No students found in the CSV file.")
+                    
+        except Exception as e:
+            messagebox.showerror("Import Error", f"Failed to import students: {e}")
+            self.update_status(f"Import failed: {e}")
+            
+    def upload_student_images(self):
+        """Upload student images for face recognition training"""
+        from tkinter import filedialog
+        import shutil
+        
+        # First, get the student information
+        enrollment = self.student_id_entry.get()
+        name = self.student_name_entry.get()
+        
+        if not enrollment or not name:
+            # Try to get from a dialog
+            student_info = self.select_student_dialog()
+            if student_info:
+                enrollment, name = student_info
+            else:
+                messagebox.showerror("Error", "Please enter or select a student first")
+                return
+        
+        # Create TrainingImage directory if it doesn't exist
+        if not os.path.isdir("TrainingImage"):
+            os.makedirs("TrainingImage")
+            
+        # Show file dialog for selecting multiple image files
+        file_paths = filedialog.askopenfilenames(
+            title=f"Select Images for {name} (ID: {enrollment})",
+            filetypes=[
+                ("Image Files", "*.jpg *.jpeg *.png *.bmp"), 
+                ("JPEG Files", "*.jpg *.jpeg"),
+                ("PNG Files", "*.png"),
+                ("All Files", "*.*")
+            ]
+        )
+        
+        if not file_paths:
+            return
+            
+        try:
+            # Process each selected image
+            imported_count = 0
+            skipped_count = 0
+            
+            # Create a progress dialog
+            progress_window = tk.Toplevel(self.root)
+            progress_window.title("Importing Images")
+            progress_window.geometry("400x150")
+            progress_window.resizable(False, False)
+            progress_window.transient(self.root)  # Set as transient to main window
+            
+            # Center the progress window
+            progress_window.update_idletasks()
+            x = self.root.winfo_x() + (self.root.winfo_width() - progress_window.winfo_width()) // 2
+            y = self.root.winfo_y() + (self.root.winfo_height() - progress_window.winfo_height()) // 2
+            progress_window.geometry(f"+{x}+{y}")
+            
+            # Add a label
+            info_label = tk.Label(
+                progress_window, 
+                text=f"Processing {len(file_paths)} images for {name}...", 
+                padx=20, pady=10
+            )
+            info_label.pack()
+            
+            # Add a progress bar
+            progress_var = tk.DoubleVar()
+            progress_bar = ttk.Progressbar(
+                progress_window, 
+                variable=progress_var, 
+                maximum=len(file_paths)
+            )
+            progress_bar.pack(fill=tk.X, padx=20, pady=10)
+            
+            # Status label
+            status_label = tk.Label(progress_window, text="Initializing...", padx=20)
+            status_label.pack()
+            
+            for i, file_path in enumerate(file_paths):
+                # Update progress
+                progress_var.set(i)
+                status_label.config(text=f"Processing image {i+1} of {len(file_paths)}")
+                progress_window.update_idletasks()
+                
+                try:
+                    # Read the image
+                    img = cv2.imread(file_path)
+                    if img is None:
+                        skipped_count += 1
+                        continue
+                        
+                    # Convert to grayscale for face detection
+                    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                    
+                    # Detect faces in the image
+                    faces = self.face_detector.detect_faces(gray)
+                    
+                    if not faces:
+                        skipped_count += 1
+                        continue
+                        
+                    # Sort faces by area (largest first)
+                    faces = sorted(faces, key=lambda f: f[2] * f[3], reverse=True)
+                    
+                    # Extract the largest face
+                    x, y, w, h = faces[0]
+                    face_img = gray[y:y+h, x:x+w]
+                    
+                    # Standardize size for better training
+                    face_img = cv2.resize(face_img, (200, 200))
+                    
+                    # Save the face image with standardized filename
+                    file_name = f"{name}.{enrollment}.{imported_count}.jpg"
+                    save_path = os.path.join("TrainingImage", file_name)
+                    
+                    cv2.imwrite(save_path, face_img)
+                    imported_count += 1
+                    
+                except Exception as e:
+                    skipped_count += 1
+                    print(f"Error processing image {file_path}: {e}")
+            
+            # Close progress dialog
+            progress_window.destroy()
+            
+            # Show results
+            if imported_count > 0:
+                messagebox.showinfo(
+                    "Import Complete",
+                    f"Successfully imported {imported_count} face images for {name}.\n" +
+                    (f"\n{skipped_count} images were skipped due to errors or no face detected." if skipped_count > 0 else "")
+                )
+                self.update_status(f"Imported {imported_count} images for {name}")
+            else:
+                messagebox.showwarning(
+                    "Import Failed",
+                    "No face images were imported. Please ensure the images contain clear, detectable faces."
+                )
+                self.update_status("Face image import failed")
+                
+        except Exception as e:
+            messagebox.showerror("Import Error", f"Failed to import images: {e}")
+            self.update_status(f"Image import failed: {e}")
+            
+    def select_student_dialog(self):
+        """Open a dialog to select a student from the database"""
+        # Get students from database
+        students_df = self.db.get_student_details()
+        
+        if students_df.empty:
+            messagebox.showinfo("No Students", "No students are registered in the database.")
+            return None
+            
+        # Create a dialog
+        select_dialog = tk.Toplevel(self.root)
+        select_dialog.title("Select Student")
+        select_dialog.geometry("400x400")
+        select_dialog.resizable(False, False)
+        select_dialog.transient(self.root)
+        select_dialog.grab_set()  # Make the dialog modal
+        
+        # Center the dialog
+        select_dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - select_dialog.winfo_width()) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - select_dialog.winfo_height()) // 2
+        select_dialog.geometry(f"+{x}+{y}")
+        
+        # Add a label
+        tk.Label(
+            select_dialog,
+            text="Select a student:",
+            font=('times', 12, 'bold'),
+            pady=10
+        ).pack(fill=tk.X)
+        
+        # Create a search frame
+        search_frame = tk.Frame(select_dialog)
+        search_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        tk.Label(search_frame, text="Search:").pack(side=tk.LEFT)
+        
+        search_var = tk.StringVar()
+        search_entry = tk.Entry(search_frame, textvariable=search_var, width=30)
+        search_entry.pack(side=tk.LEFT, padx=5)
+        
+        # Create a frame for the listbox with scrollbar
+        list_frame = tk.Frame(select_dialog)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Create scrollbar
+        scrollbar = tk.Scrollbar(list_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Create listbox
+        student_listbox = tk.Listbox(
+            list_frame,
+            yscrollcommand=scrollbar.set,
+            font=('times', 11),
+            selectmode=tk.SINGLE,
+            height=15
+        )
+        student_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=student_listbox.yview)
+        
+        # Populate listbox with students
+        student_data = []  # List to store (enrollment, name) tuples
+        
+        for _, row in students_df.iterrows():
+            enrollment = row['Enrollment']
+            name = row['Name']
+            student_listbox.insert(tk.END, f"{name} (ID: {enrollment})")
+            student_data.append((enrollment, name))
+            
+        # Function to filter the listbox based on search
+        def filter_students(*args):
+            search_text = search_var.get().lower()
+            student_listbox.delete(0, tk.END)
+            student_data.clear()
+            
+            for _, row in students_df.iterrows():
+                enrollment = row['Enrollment']
+                name = row['Name']
+                
+                if search_text in name.lower() or search_text in enrollment.lower():
+                    student_listbox.insert(tk.END, f"{name} (ID: {enrollment})")
+                    student_data.append((enrollment, name))
+                    
+        # Bind the search entry to filter function
+        search_var.trace("w", filter_students)
+        
+        # Variable to store the selected student
+        selected_student = [None]  # Use a list for non-local reference
+        
+        # Function to handle selection
+        def on_select():
+            selection = student_listbox.curselection()
+            if not selection:
+                messagebox.showwarning("No Selection", "Please select a student.")
+                return
+                
+            index = selection[0]
+            selected_student[0] = student_data[index]
+            select_dialog.destroy()
+            
+        def on_cancel():
+            selected_student[0] = None
+            select_dialog.destroy()
+            
+        # Add buttons
+        button_frame = tk.Frame(select_dialog)
+        button_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        select_button = tk.Button(
+            button_frame,
+            text="Select",
+            command=on_select,
+            bg="#4CAF50",
+            fg="white",
+            font=('times', 11, 'bold'),
+            width=10,
+            height=1
+        )
+        select_button.pack(side=tk.RIGHT, padx=5)
+        
+        cancel_button = tk.Button(
+            button_frame,
+            text="Cancel",
+            command=on_cancel,
+            bg="#f44336",
+            fg="white",
+            font=('times', 11),
+            width=10,
+            height=1
+        )
+        cancel_button.pack(side=tk.RIGHT, padx=5)
+        
+        # Double-click to select
+        student_listbox.bind("<Double-Button-1>", lambda e: on_select())
+        
+        # Set focus to search entry
+        search_entry.focus_set()
+        
+        # Wait for the dialog to be closed
+        self.root.wait_window(select_dialog)
+        
+        # Return the selected student
+        return selected_student[0]
 
-if __name__ == "__main__":
-    main()
+    def manage_subjects(self):
+        """Open a dialog to manage subjects"""
+        # Create a dialog
+        subjects_dialog = tk.Toplevel(self.root)
+        subjects_dialog.title("Manage Subjects")
+        subjects_dialog.geometry("500x500")
+        subjects_dialog.resizable(True, True)
+        subjects_dialog.transient(self.root)
+        subjects_dialog.grab_set()  # Make the dialog modal
+        
+        # Center the dialog
+        subjects_dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - subjects_dialog.winfo_width()) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - subjects_dialog.winfo_height()) // 2
+        subjects_dialog.geometry(f"+{x}+{y}")
+        
+        # Add a title
+        title_label = tk.Label(
+            subjects_dialog,
+            text="Manage Subjects",
+            font=('times', 16, 'bold'),
+            pady=10
+        )
+        title_label.pack(fill=tk.X)
+        
+        # Create main content frame
+        content_frame = tk.Frame(subjects_dialog)
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+        
+        # Create left panel (subject list)
+        list_frame = tk.LabelFrame(content_frame, text="Available Subjects")
+        list_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Create scrollbar for listbox
+        list_scrollbar = tk.Scrollbar(list_frame)
+        list_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Create listbox for subjects
+        subjects_listbox = tk.Listbox(
+            list_frame,
+            yscrollcommand=list_scrollbar.set,
+            font=('times', 12),
+            selectmode=tk.SINGLE,
+            width=25,
+            height=15
+        )
+        subjects_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        list_scrollbar.config(command=subjects_listbox.yview)
+        
+        # Create right panel (actions)
+        action_frame = tk.Frame(content_frame)
+        action_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=10, pady=10)
+        
+        # Add Subject frame
+        add_frame = tk.LabelFrame(action_frame, text="Add New Subject")
+        add_frame.pack(fill=tk.X, pady=10)
+        
+        # Add subject entry
+        tk.Label(add_frame, text="Subject Name:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        subject_entry = tk.Entry(add_frame, width=20, font=('times', 11))
+        subject_entry.grid(row=0, column=1, padx=5, pady=5)
+        
+        # Add subject button
+        add_btn = tk.Button(
+            add_frame, 
+            text="Add",
+            bg="#4CAF50",
+            fg="white",
+            width=8,
+            command=lambda: add_subject()
+        )
+        add_btn.grid(row=0, column=2, padx=5, pady=5)
+        
+        # Function to add a new subject
+        def add_subject():
+            subject = subject_entry.get().strip()
+            if not subject:
+                messagebox.showwarning("Warning", "Please enter a subject name")
+                return
+                
+            # Check if subject already exists
+            existing_subjects = load_subjects()
+            if subject in existing_subjects:
+                messagebox.showwarning("Warning", f"Subject '{subject}' already exists")
+                return
+                
+            # Add to database or config
+            try:
+                # For this simple implementation, just save to a config file
+                save_subject(subject)
+                
+                # Clear the entry
+                subject_entry.delete(0, tk.END)
+                
+                # Update listbox
+                refresh_subject_list()
+                
+                # Update quick subject buttons in main window
+                update_quick_subjects()
+                
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to add subject: {e}")
+        
+        # Delete subject frame
+        delete_frame = tk.LabelFrame(action_frame, text="Delete Subject")
+        delete_frame.pack(fill=tk.X, pady=10)
+        
+        # Delete selected subject button
+        delete_btn = tk.Button(
+            delete_frame, 
+            text="Delete Selected",
+            bg="#f44336",
+            fg="white",
+            width=15,
+            command=lambda: delete_subject()
+        )
+        delete_btn.pack(padx=10, pady=10)
+        
+        # Function to delete a subject
+        def delete_subject():
+            selection = subjects_listbox.curselection()
+            if not selection:
+                messagebox.showwarning("Warning", "Please select a subject to delete")
+                return
+                
+            subject = subjects_listbox.get(selection[0])
+            confirm = messagebox.askyesno(
+                "Confirm Delete",
+                f"Are you sure you want to delete the subject '{subject}'?\n\n"
+                "This will not delete any attendance records."
+            )
+            
+            if confirm:
+                try:
+                    # Remove from database or config
+                    remove_subject(subject)
+                    
+                    # Update listbox
+                    refresh_subject_list()
+                    
+                    # Update quick subject buttons in main window
+                    update_quick_subjects()
+                    
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to delete subject: {e}")
+        
+        # Import/Export frame
+        imp_exp_frame = tk.LabelFrame(action_frame, text="Import/Export")
+        imp_exp_frame.pack(fill=tk.X, pady=10)
+        
+        # Import button
+        import_btn = tk.Button(
+            imp_exp_frame, 
+            text="Import Subjects",
+            bg="#2196F3",
+            fg="white",
+            width=15,
+            command=lambda: import_subjects()
+        )
+        import_btn.pack(padx=10, pady=5)
+        
+        # Export button
+        export_btn = tk.Button(
+            imp_exp_frame, 
+            text="Export Subjects",
+            bg="#FF9800",
+            fg="white",
+            width=15,
+            command=lambda: export_subjects()
+        )
+        export_btn.pack(padx=10, pady=5)
+        
+        # Function to import subjects from CSV
+        def import_subjects():
+            from tkinter import filedialog
+            import csv
+            
+            file_path = filedialog.askopenfilename(
+                title="Import Subjects from CSV",
+                filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")]
+            )
+            
+            if not file_path:
+                return
+                
+            try:
+                imported = []
+                with open(file_path, 'r', newline='') as f:
+                    reader = csv.reader(f)
+                    for row in reader:
+                        if row and row[0].strip():
+                            subject = row[0].strip()
+                            save_subject(subject)
+                            imported.append(subject)
+                
+                # Update listbox
+                refresh_subject_list()
+                
+                # Update quick subject buttons in main window
+                update_quick_subjects()
+                
+                if imported:
+                    messagebox.showinfo("Import Complete", f"Successfully imported {len(imported)} subjects")
+                else:
+                    messagebox.showinfo("Import Complete", "No subjects were imported")
+                    
+            except Exception as e:
+                messagebox.showerror("Import Error", f"Failed to import subjects: {e}")
+        
+        # Function to export subjects to CSV
+        def export_subjects():
+            from tkinter import filedialog
+            import csv
+            
+            file_path = filedialog.asksaveasfilename(
+                title="Export Subjects to CSV",
+                defaultextension=".csv",
+                filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")]
+            )
+            
+            if not file_path:
+                return
+                
+            try:
+                subjects = load_subjects()
+                with open(file_path, 'w', newline='') as f:
+                    writer = csv.writer(f)
+                    for subject in subjects:
+                        writer.writerow([subject])
+                
+                messagebox.showinfo("Export Complete", f"Successfully exported {len(subjects)} subjects to {file_path}")
+                    
+            except Exception as e:
+                messagebox.showerror("Export Error", f"Failed to export subjects: {e}")
+        
+        # Function to load subjects from config file
+        def load_subjects():
+            try:
+                # Create config directory if it doesn't exist
+                os.makedirs("config", exist_ok=True)
+                
+                # Check if subjects file exists
+                subjects_file = os.path.join("config", "subjects.txt")
+                if not os.path.exists(subjects_file):
+                    # Create with default subjects
+                    with open(subjects_file, 'w') as f:
+                        f.write("Python\nJava\nWeb Dev\nData Science\n")
+                
+                # Read subjects from file
+                with open(subjects_file, 'r') as f:
+                    subjects = [line.strip() for line in f.readlines() if line.strip()]
+                
+                return subjects
+                
+            except Exception as e:
+                print(f"Error loading subjects: {e}")
+                return ["Python", "Java", "Web Dev", "Data Science"]  # Default subjects
+        
+        # Function to save a new subject
+        def save_subject(subject):
+            subjects = load_subjects()
+            if subject not in subjects:
+                subjects.append(subject)
+                
+            # Save back to file
+            subjects_file = os.path.join("config", "subjects.txt")
+            with open(subjects_file, 'w') as f:
+                for s in subjects:
+                    f.write(f"{s}\n")
+        
+        # Function to remove a subject
+        def remove_subject(subject):
+            subjects = load_subjects()
+            if subject in subjects:
+                subjects.remove(subject)
+                
+            # Save back to file
+            subjects_file = os.path.join("config", "subjects.txt")
+            with open(subjects_file, 'w') as f:
+                for s in subjects:
+                    f.write(f"{s}\n")
+        
+        # Function to refresh the subject list
+        def refresh_subject_list():
+            # Clear the listbox
+            subjects_listbox.delete(0, tk.END)
+            
+            # Load subjects
+            subjects = load_subjects()
+            
+            # Add to listbox
+            for subject in subjects:
+                subjects_listbox.insert(tk.END, subject)
+        
+        # Function to update quick subject buttons in main UI
+        def update_quick_subjects():
+            # Get all children of the subjects_frame
+            children = self.root.nametowidget(".!frame.!frame.!labelframe2.!frame").winfo_children()
+            
+            # Remove existing buttons
+            for child in children:
+                child.destroy()
+            
+            # Load subjects
+            subjects = load_subjects()
+            
+            # Add quick subject buttons (max 4)
+            quick_subjects = subjects[:4]  # Take first 4 subjects
+            for i, subject in enumerate(quick_subjects):
+                btn = tk.Button(
+                    self.root.nametowidget(".!frame.!frame.!labelframe2.!frame"), 
+                    text=subject, 
+                    command=lambda s=subject: self.set_subject(s),
+                    bg="#673AB7", 
+                    fg="white", 
+                    font=('times', 10)
+                )
+                btn.grid(row=0, column=i, padx=5, pady=5)
+        
+        # Initial load of subjects
+        refresh_subject_list()
+        
+        # Add a close button at the bottom
+        close_btn = tk.Button(
+            subjects_dialog, 
+            text="Close",
+            command=subjects_dialog.destroy,
+            bg="#607D8B",
+            fg="white",
+            font=('times', 12),
+            width=10,
+            height=1
+        )
+        close_btn.pack(pady=15)
+        
+        # Set focus to subject entry
+        subject_entry.focus_set()
+        
+        # Wait for the dialog to close
+        self.root.wait_window(subjects_dialog)
+
+    def open_analytics_dashboard(self):
+        """Open the attendance analytics dashboard"""
+        try:
+            # Check if we have attendance data to show
+            subject = self.subject_entry.get()
+            if not subject:
+                # Show all subjects if none selected
+                attendance_records = self.db.get_all_attendance_records()
+            else:
+                attendance_records = self.db.get_attendance_records(subject=subject)
+            
+            if not attendance_records:
+                messagebox.showwarning(
+                    "No Data",
+                    "No attendance records found. Please take attendance first."
+                )
+                return
+                
+            # Create and show analytics dashboard
+            dashboard_window = tk.Toplevel(self.root)
+            dashboard = AnalyticsDashboard(dashboard_window)
+            
+            # Pass attendance data
+            dashboard.load_attendance_data(attendance_records)
+            
+            # Set window properties
+            dashboard_window.title("Attendance Analytics Dashboard")
+            dashboard_window.geometry("1000x700")
+            dashboard_window.protocol("WM_DELETE_WINDOW", lambda: dashboard_window.destroy())
+            
+            # Center on screen
+            dashboard_window.update_idletasks()
+            x = self.root.winfo_x() + (self.root.winfo_width() - dashboard_window.winfo_width()) // 2
+            y = self.root.winfo_y() + (self.root.winfo_height() - dashboard_window.winfo_height()) // 2
+            dashboard_window.geometry(f"+{x}+{y}")
+            
+        except Exception as e:
+            messagebox.showerror("Analytics Error", f"Failed to open analytics dashboard: {e}")
+            self.update_status(f"Analytics error: {e}")
+            
+    def generate_reports(self):
+        """Generate attendance reports"""
+        try:
+            from tkinter import filedialog
+            import csv
+            
+            # Get subject
+            subject = self.subject_entry.get()
+            
+            # Create reports dialog
+            reports_window = tk.Toplevel(self.root)
+            reports_window.title("Generate Reports")
+            reports_window.geometry("500x550")
+            reports_window.resizable(False, False)
+            
+            # TODO: Implement report generation functionality
+            
+        except Exception as e:
+            messagebox.showerror("Report Error", f"Failed to generate report: {e}")
+            self.update_status(f"Report generation failed: {e}")
+
+    def open_settings(self):
+        """Open application settings dialog"""
+        try:
+            # Use our new AppConfig and SettingsDialog classes
+            from src.ui.settings import AppConfig, SettingsDialog
+            
+            # Create AppConfig instance
+            config = AppConfig()
+            
+            # Open settings dialog
+            dialog = SettingsDialog(self.root, config)
+            
+            # Wait for the dialog to close before applying changes
+            self.root.wait_window(dialog.dialog)
+            
+            # Apply settings changes
+            # Update camera settings
+            camera_id = config.get("camera.id", 0)
+            resolution = config.get("camera.resolution", [640, 480])
+            fps = config.get("camera.fps", 30)
+            
+            if hasattr(self, 'camera_manager'):
+                # Update camera settings in existing manager
+                if hasattr(self.camera_manager, 'set_preferred_settings'):
+                    self.camera_manager.set_preferred_settings(camera_id, resolution, fps)
+            
+            # Update application title
+            app_name = config.get("app_name", "Face Recognition Attendance System")
+            self.root.title(app_name)
+            
+            # Update UI based on settings
+            if config.get("ui.show_status_bar", True):
+                # Show status bar
+                self.status_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+                self.camera_status.pack(side=tk.RIGHT)
+            else:
+                # Hide status bar
+                self.status_label.pack_forget()
+                self.camera_status.pack_forget()
+                
+            # Set default subject if specified
+            default_subject = config.get("attendance.default_subject", "")
+            if default_subject and not self.subject_entry.get():
+                self.subject_entry.delete(0, tk.END)
+                self.subject_entry.insert(0, default_subject)
+            
+            # Update face detection parameters
+            if hasattr(self, 'face_detector'):
+                self.face_detector.set_confidence_threshold(
+                    config.get("face_detection.confidence_threshold", 60)
+                )
+            
+            # Update status
+            self.update_status("Settings applied")
+                
+        except Exception as e:
+            messagebox.showerror("Settings Error", f"Error opening settings: {e}")
+            logger.exception(f"Error opening settings: {e}")
+
+    def camera_settings(self):
+        """Open camera settings dialog"""
+        try:
+            # Import the new CameraSettingsDialog
+            from src.ui.camera_settings_dialog import CameraSettingsDialog
+            from src.ui.settings import AppConfig
+            
+            # Initialize camera manager if needed
+            if not hasattr(self, 'camera_manager'):
+                self.camera_manager = CameraManager()
+            
+            # Get config
+            config = AppConfig()
+            
+            # Create and show the camera settings dialog
+            dialog = CameraSettingsDialog(self.root, self.camera_manager, config)
+            
+            # Wait for the dialog to close before applying changes
+            self.root.wait_window(dialog.dialog)
+            
+            # Update camera settings if needed
+            camera_id = config.get("camera.id", 0)
+            resolution = config.get("camera.resolution", [640, 480])
+            fps = config.get("camera.fps", 30)
+            flip_image = config.get("camera.flip_image", False)
+            
+            # Update camera manager with new settings
+            if hasattr(self, 'camera_manager'):
+                self.camera_manager.set_preferred_settings(
+                    camera_id=camera_id,
+                    resolution=resolution,
+                    fps=fps,
+                    flip=flip_image
+                )
+            
+            # Update status
+            self.update_status("Camera settings updated")
+                
+        except Exception as e:
+            messagebox.showerror("Camera Settings", f"Error opening camera settings: {e}")
+            logger.exception(f"Error opening camera settings: {e}")
+
+    def group_attendance(self):
+        """Mark attendance for a group of students at once"""
+        # Get subject
+        subject = self.subject_entry.get()
+        if not subject:
+            messagebox.showerror("Error", "Please enter a subject name first")
+            return
+            
+        # Get students from database
+        students_df = self.db.get_student_details()
+        if students_df.empty:
+            messagebox.showwarning("Warning", "No students registered in the database")
+            return
+            
+        # Create dialog
+        group_dialog = tk.Toplevel(self.root)
+        group_dialog.title(f"Group Attendance - {subject}")
+        group_dialog.geometry("600x500")
+        group_dialog.resizable(True, True)
+        group_dialog.transient(self.root)
+        group_dialog.grab_set()
+        
+        # Center dialog
+        group_dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - group_dialog.winfo_width()) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - group_dialog.winfo_height()) // 2
+        group_dialog.geometry(f"+{x}+{y}")
+        
+        # Dialog header
+        header_frame = tk.Frame(group_dialog, pady=10)
+        header_frame.pack(fill=tk.X)
+        
+        tk.Label(
+            header_frame,
+            text=f"Mark Group Attendance for: {subject}",
+            font=('times', 14, 'bold')
+        ).pack(side=tk.LEFT, padx=20)
+        
+        # Date/time frame
+        date_frame = tk.Frame(group_dialog)
+        date_frame.pack(fill=tk.X, padx=20, pady=5)
+        
+        # Current date and time
+        now = datetime.datetime.now()
+        date_str = now.strftime("%Y-%m-%d")
+        time_str = now.strftime("%H:%M:%S")
+        
+        # Date field
+        tk.Label(date_frame, text="Date:", width=10, anchor=tk.W).grid(row=0, column=0, padx=5, pady=5)
+        date_var = tk.StringVar(value=date_str)
+        date_entry = tk.Entry(date_frame, textvariable=date_var, width=15)
+        date_entry.grid(row=0, column=1, padx=5, pady=5)
+        
+        # Time field
+        tk.Label(date_frame, text="Time:", width=10, anchor=tk.W).grid(row=0, column=2, padx=5, pady=5)
+        time_var = tk.StringVar(value=time_str)
+        time_entry = tk.Entry(date_frame, textvariable=time_var, width=15)
+        time_entry.grid(row=0, column=3, padx=5, pady=5)
+        
+        # Search field
+        search_frame = tk.Frame(group_dialog)
+        search_frame.pack(fill=tk.X, padx=20, pady=5)
+        
+        tk.Label(search_frame, text="Search:", width=10, anchor=tk.W).pack(side=tk.LEFT, padx=5)
+        search_var = tk.StringVar()
+        search_entry = tk.Entry(search_frame, textvariable=search_var, width=30)
+        search_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        
+        # Student list frame with checkboxes
+        list_frame = tk.Frame(group_dialog)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+        
+        # Create a canvas with scrollbar for the student list
+        canvas_frame = tk.Frame(list_frame)
+        canvas_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Scrollbar
+        scrollbar = tk.Scrollbar(canvas_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Canvas
+        canvas = tk.Canvas(canvas_frame, yscrollcommand=scrollbar.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=canvas.yview)
+        
+        # Frame inside canvas for checkboxes
+        students_frame = tk.Frame(canvas)
+        students_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Create a window for the frame
+        canvas.create_window((0, 0), window=students_frame, anchor=tk.NW)
+        
+        # Track selected students
+        selected_students = {}
+        
+        # Status tracking
+        status_var = tk.StringVar(value="0 students selected")
+        
+        # Populate the list
+        def populate_students(search_text=""):
+            # Clear previous widgets
+            for widget in students_frame.winfo_children():
+                widget.destroy()
+                
+            # Header row
+            header_frame = tk.Frame(students_frame)
+            header_frame.pack(fill=tk.X, pady=5)
+            
+            # Select all checkbox
+            select_all_var = tk.BooleanVar(value=False)
+            cb = tk.Checkbutton(
+                header_frame, 
+                text="Select All", 
+                variable=select_all_var,
+                command=lambda: toggle_all(select_all_var.get())
+            )
+            cb.pack(side=tk.LEFT, padx=5)
+            
+            # Column headers
+            tk.Label(header_frame, text="ID", width=15, font=('times', 11, 'bold')).pack(side=tk.LEFT, padx=5)
+            tk.Label(header_frame, text="Student Name", width=30, font=('times', 11, 'bold')).pack(side=tk.LEFT, padx=5)
+            
+            # Filter students based on search
+            filtered_df = students_df
+            if search_text:
+                search_text = search_text.lower()
+                filtered_df = students_df[
+                    students_df['Name'].str.lower().str.contains(search_text) | 
+                    students_df['Enrollment'].str.lower().str.contains(search_text)
+                ]
+            
+            # No students found
+            if filtered_df.empty:
+                no_students_label = tk.Label(
+                    students_frame,
+                    text="No students match your search",
+                    font=('times', 12),
+                    fg="gray",
+                    pady=20
+                )
+                no_students_label.pack(fill=tk.X)
+                return
+            
+            # Create checkbox for each student
+            for i, (_, row) in enumerate(filtered_df.iterrows()):
+                enrollment = row['Enrollment']
+                name = row['Name']
+                
+                # Row frame with alternating background
+                bg_color = "#f0f0f0" if i % 2 == 0 else "white"
+                row_frame = tk.Frame(students_frame, bg=bg_color)
+                row_frame.pack(fill=tk.X, pady=1)
+                
+                # Student checkbox
+                var = tk.BooleanVar(value=enrollment in selected_students)
+                cb = tk.Checkbutton(
+                    row_frame, 
+                    variable=var,
+                    bg=bg_color,
+                    command=lambda e=enrollment, n=name, v=var: toggle_student(e, n, v.get())
+                )
+                cb.pack(side=tk.LEFT, padx=5)
+                
+                # Student info
+                tk.Label(row_frame, text=enrollment, width=15, anchor=tk.W, bg=bg_color).pack(side=tk.LEFT, padx=5)
+                tk.Label(row_frame, text=name, width=30, anchor=tk.W, bg=bg_color).pack(side=tk.LEFT, padx=5)
+            
+            # Update canvas scroll region
+            students_frame.update_idletasks()
+            canvas.config(scrollregion=canvas.bbox(tk.ALL))
+            
+            # Update status
+            update_status()
+        
+        # Toggle all students
+        def toggle_all(selected):
+            if selected:
+                # Select all visible students
+                for widget in students_frame.winfo_children():
+                    if isinstance(widget, tk.Frame) and widget.winfo_children():
+                        for child in widget.winfo_children():
+                            if isinstance(child, tk.Checkbutton):
+                                # Extract the enrollment and name from the command
+                                cmd = child.cget('command')
+                                if cmd and len(cmd.__defaults__) >= 2:
+                                    enrollment, name = cmd.__defaults__[0], cmd.__defaults__[1]
+                                    selected_students[enrollment] = name
+                                # Set the checkbutton to selected
+                                child.select()
+            else:
+                # Deselect all students
+                selected_students.clear()
+                for widget in students_frame.winfo_children():
+                    if isinstance(widget, tk.Frame) and widget.winfo_children():
+                        for child in widget.winfo_children():
+                            if isinstance(child, tk.Checkbutton):
+                                child.deselect()
+                                
+            # Update status
+            update_status()
+        
+        # Toggle individual student selection
+        def toggle_student(enrollment, name, selected):
+            if selected:
+                selected_students[enrollment] = name
+            else:
+                if enrollment in selected_students:
+                    del selected_students[enrollment]
+                    
+            # Update status
+            update_status()
+        
+        # Update status text
+        def update_status():
+            count = len(selected_students)
+            status_var.set(f"{count} student{'s' if count != 1 else ''} selected")
+        
+        # Bind search to update the list
+        def on_search_change(*args):
+            populate_students(search_var.get())
+            
+        search_var.trace("w", on_search_change)
+        
+        # Status indicator
+        status_label = tk.Label(group_dialog, textvariable=status_var, anchor=tk.W, pady=5)
+        status_label.pack(fill=tk.X, padx=20)
+        
+        # Buttons frame
+        buttons_frame = tk.Frame(group_dialog, pady=10)
+        buttons_frame.pack(fill=tk.X, padx=20)
+        
+        # Mark attendance button
+        mark_btn = tk.Button(
+            buttons_frame,
+            text="Mark Attendance",
+            command=lambda: mark_attendance(),
+            bg="#4CAF50",
+            fg="white",
+            font=('times', 12, 'bold'),
+            width=15,
+            height=2
+        )
+        mark_btn.pack(side=tk.RIGHT, padx=5)
+        
+        # Cancel button
+        cancel_btn = tk.Button(
+            buttons_frame,
+            text="Cancel",
+            command=group_dialog.destroy,
+            width=10,
+            height=2
+        )
+        cancel_btn.pack(side=tk.RIGHT, padx=5)
+        
+        # Mark attendance function
+        def mark_attendance():
+            # Check if any students are selected
+            if not selected_students:
+                messagebox.showwarning("Warning", "No students selected")
+                return
+                
+            # Get date and time
+            try:
+                date_val = date_var.get()
+                time_val = time_var.get()
+                
+                # Validate date format (YYYY-MM-DD)
+                datetime.datetime.strptime(date_val, "%Y-%m-%d")
+                
+                # Validate time format (HH:MM:SS)
+                datetime.datetime.strptime(time_val, "%H:%M:%S")
+                
+            except ValueError:
+                messagebox.showerror("Error", "Invalid date or time format. Use YYYY-MM-DD and HH:MM:SS")
+                return
+                
+            # Create a new attendance file or use existing
+            file_prefix = f"Group Attendance{subject}"
+            file_name = f"{file_prefix}_{date_val.replace('-', '')}_{time_val.replace(':', '')}.csv"
+            file_path = os.path.join("Attendance", file_name)
+            
+            # Check if directory exists
+            if not os.path.isdir("Attendance"):
+                os.makedirs("Attendance")
+            
+            # Create or open file
+            success_count = 0
+            
+            try:
+                # Create file with header if it doesn't exist
+                if not os.path.exists(file_path):
+                    with open(file_path, 'w', newline='') as f:
+                        f.write("Enrollment,Name,Date,Time\n")
+                
+                # Mark attendance for each selected student
+                for enrollment, name in selected_students.items():
+                    success = self.db.mark_attendance(enrollment, name, subject, date_val, time_val)
+                    if success:
+                        success_count += 1
+                        
+                # Show results
+                if success_count > 0:
+                    messagebox.showinfo(
+                        "Success", 
+                        f"Marked attendance for {success_count} student{'s' if success_count != 1 else ''}"
+                    )
+                    self.update_status(f"Marked group attendance for {success_count} students")
+                    group_dialog.destroy()
+                else:
+                    messagebox.showerror(
+                        "Error", 
+                        "Failed to mark attendance for any students"
+                    )
+                    
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to mark attendance: {e}")
+                logger.exception(f"Error marking group attendance: {e}")
+        
+        # Initial population of the list
+        populate_students()
+        
+        # Set focus to search entry
+        search_entry.focus_set()

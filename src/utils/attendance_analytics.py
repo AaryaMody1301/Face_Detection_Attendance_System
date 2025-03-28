@@ -34,8 +34,21 @@ class AttendanceAnalytics:
         self.subjects = []
         self.student_ids = []
         self.date_range = []
-        self.cache = DataCache()
-        self.preferences = UserPreferences()
+        
+        # Initialize cache and preferences with error handling
+        try:
+            from .data_cache import DataCache
+            self.cache = DataCache()
+        except (ImportError, AttributeError) as e:
+            print(f"Warning: DataCache not available - {e}")
+            self.cache = None
+            
+        try:
+            from .user_preferences import UserPreferences
+            self.preferences = UserPreferences()
+        except (ImportError, AttributeError) as e:
+            print(f"Warning: UserPreferences not available - {e}")
+            self.preferences = None
     
     def load_attendance_data(self, force_refresh=False):
         """
@@ -47,13 +60,16 @@ class AttendanceAnalytics:
         Returns:
             bool: True if data was loaded successfully, False otherwise
         """
-        # Try to get from cache first
-        if not force_refresh:
-            cached_data = self.cache.get('attendance_data', {})
-            if cached_data is not None:
-                self.attendance_data = cached_data
-                self._update_metadata()
-                return True
+        # Try to get from cache first if cache is available and force_refresh is False
+        if not force_refresh and self.cache is not None:
+            try:
+                cached_data = self.cache.get('attendance_data', {})
+                if cached_data is not None:
+                    self.attendance_data = cached_data
+                    self._update_metadata()
+                    return True
+            except Exception as e:
+                print(f"Cache retrieval failed: {e}")
         
         # If not in cache or force refresh, load from files
         if not os.path.isdir(self.attendance_dir):
@@ -61,9 +77,14 @@ class AttendanceAnalytics:
             return False
         
         all_data = []
+        
+        # Define directories to exclude
+        excluded_dirs = ["Backup", "Exports", "Duplicates", "Archive"]
+        
+        # List all subject directories (excluding special ones)
         subject_directories = [d for d in os.listdir(self.attendance_dir) 
-                              if os.path.isdir(os.path.join(self.attendance_dir, d)) and 
-                              d not in ["Backup", "Exports", "Duplicates"]]
+                            if os.path.isdir(os.path.join(self.attendance_dir, d)) and 
+                            d not in excluded_dirs]
         
         # Process regular attendance files in main directory
         csv_files = [f for f in os.listdir(self.attendance_dir) 
@@ -124,6 +145,27 @@ class AttendanceAnalytics:
                 except Exception as e:
                     print(f"Error reading {exports_dir}/{file}: {e}")
         
+        # Process backup attendance files
+        backups_dir = os.path.join("backups", "attendance_backup")
+        if os.path.isdir(backups_dir):
+            backup_files = [f for f in os.listdir(backups_dir)
+                         if os.path.isfile(os.path.join(backups_dir, f)) and
+                         f.lower().endswith('.csv')]
+            
+            for file in backup_files:
+                try:
+                    file_path = os.path.join(backups_dir, file)
+                    df = pd.read_csv(file_path)
+                    
+                    # Extract subject from filename
+                    subject = self._extract_subject_from_filename(file)
+                    if 'Subject' not in df.columns:
+                        df['Subject'] = subject
+                    
+                    all_data.append(df)
+                except Exception as e:
+                    print(f"Error reading backup file {file}: {e}")
+        
         if not all_data:
             print("No attendance data found")
             return False
@@ -133,28 +175,46 @@ class AttendanceAnalytics:
         
         # Ensure required columns exist
         required_columns = ['Enrollment', 'Name', 'Date', 'Time']
-        for col in required_columns:
-            if col not in self.attendance_data.columns:
-                print(f"Required column missing: {col}")
-                return False
+        missing_columns = [col for col in required_columns if col not in self.attendance_data.columns]
+        if missing_columns:
+            print(f"Required columns missing: {', '.join(missing_columns)}")
+            return False
         
         # Convert date to datetime
         try:
             self.attendance_data['Date'] = pd.to_datetime(self.attendance_data['Date'])
         except Exception as e:
             print(f"Error converting dates: {e}")
-            # Try with different format
-            try:
-                self.attendance_data['Date'] = pd.to_datetime(self.attendance_data['Date'], 
-                                                           format='%Y-%m-%d')
-            except:
-                print("Could not convert dates to datetime format")
+            # Try with different common formats
+            for date_format in ['%Y-%m-%d', '%d-%m-%Y', '%m/%d/%Y', '%Y/%m/%d']:
+                try:
+                    print(f"Trying date format: {date_format}")
+                    self.attendance_data['Date'] = pd.to_datetime(
+                        self.attendance_data['Date'], format=date_format, errors='coerce'
+                    )
+                    # Check if we succeeded
+                    if not self.attendance_data['Date'].isna().all():
+                        print(f"Date conversion succeeded with format: {date_format}")
+                        break
+                except:
+                    pass
+        
+        # Drop rows with invalid dates
+        if pd.api.types.is_datetime64_dtype(self.attendance_data['Date']):
+            invalid_dates = self.attendance_data['Date'].isna().sum()
+            if invalid_dates > 0:
+                print(f"Dropping {invalid_dates} rows with invalid dates")
+                self.attendance_data = self.attendance_data.dropna(subset=['Date'])
         
         # Update metadata
         self._update_metadata()
         
-        # Cache the data
-        self.cache.set('attendance_data', {}, self.attendance_data)
+        # Cache the data if possible
+        if self.cache is not None:
+            try:
+                self.cache.set('attendance_data', {}, self.attendance_data)
+            except Exception as e:
+                print(f"Failed to cache data: {e}")
         
         return True
     
@@ -1193,4 +1253,4 @@ class AttendanceAnalytics:
                 
         except Exception as e:
             print(f"Error exporting data: {e}")
-            return None 
+            return None

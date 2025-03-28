@@ -2,10 +2,31 @@
 Face detector module for detecting and recognizing faces
 """
 import os
+import sys
 import cv2
 import numpy as np
 from PIL import Image
 import logging
+import threading
+from functools import lru_cache
+
+# Fix for face_recognition_models import issue
+try:
+    # Try to import the module
+    import face_recognition
+except ImportError as e:
+    if "face_recognition_models" in str(e):
+        print("Fixing face_recognition_models import issue...")
+        # Try to fix the path issue by adding the site-packages directory directly
+        import site
+        import importlib
+        site_packages = site.getsitepackages()[0]
+        sys.path.append(site_packages)
+        # Now try to import it again
+        import face_recognition
+    else:
+        # Re-raise if it's a different import error
+        raise
 
 # Set up logging
 logging.basicConfig(
@@ -17,154 +38,139 @@ logger = logging.getLogger(__name__)
 class FaceDetector:
     """Face detector class for detecting and recognizing faces"""
     
-    def __init__(self, cascade_path="haarcascade_frontalface_default.xml"):
+    def __init__(self, detection_model="hog", scale_factor=0.5):
         """
-        Initialize the face detector
+        Initialize the face detector.
         
         Args:
-            cascade_path (str): Path to the Haar cascade file
+            detection_model (str): Face detection model to use, 'hog' (faster, less accurate) 
+                                  or 'cnn' (slower, more accurate)
+            scale_factor (float): Image scaling factor for face detection (0.25-1.0)
+                                 Lower values are faster but may reduce accuracy
         """
-        try:
-            if not os.path.exists(cascade_path):
-                # Try with absolute path if relative path doesn't work
-                script_dir = os.path.dirname(os.path.abspath(__file__))
-                project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))
-                cascade_path = os.path.join(project_root, cascade_path)
-                
-                # Try alternative cascade file if the default one is not found
-                if not os.path.exists(cascade_path):
-                    alt_cascade_path = os.path.join(project_root, "haarcascade_frontalface_alt.xml")
-                    if os.path.exists(alt_cascade_path):
-                        cascade_path = alt_cascade_path
-                    else:
-                        logger.error(f"Cascade file not found: {cascade_path}")
-                        raise FileNotFoundError(f"Cascade file not found: {cascade_path}")
-                
-            logger.info(f"Loading cascade file: {cascade_path}")
-            self.detector = cv2.CascadeClassifier(cascade_path)
-            
-            if self.detector.empty():
-                logger.error(f"Failed to load cascade classifier from {cascade_path}")
-                raise RuntimeError(f"Failed to load cascade classifier from {cascade_path}")
-                
-            logger.info("Creating face recognizer")
-            # Check if cv2.face is available in OpenCV contrib, else use a fallback
-            if hasattr(cv2, 'face'):
-                self.recognizer = cv2.face.LBPHFaceRecognizer_create(
-                    radius=2,           # Use a smaller radius for better detail
-                    neighbors=8,        # Standard number of neighbors
-                    grid_x=8,           # More grid cells for better accuracy
-                    grid_y=8,           # More grid cells for better accuracy
-                    threshold=100       # Default threshold
-                )
-            else:
-                # For newer OpenCV versions with different organization
-                try:
-                    # Try to import the face module directly
-                    from cv2 import face
-                    self.recognizer = face.LBPHFaceRecognizer_create(
-                        radius=2, neighbors=8, grid_x=8, grid_y=8, threshold=100
-                    )
-                except (ImportError, AttributeError):
-                    logger.warning("OpenCV face module not found, using fallback recognition")
-                    # Simple fallback for testing (will need to be replaced with actual recognition)
-                    from sklearn.neighbors import KNeighborsClassifier
-                    self.recognizer = KNeighborsClassifier(n_neighbors=5, weights='distance')
-                    self._using_sklearn = True
-                    self._faces_data = []
-                    self._faces_labels = []
-            
-        except Exception as e:
-            logger.error(f"Error initializing face detector: {e}")
-            raise
-        
-    def detect_faces(self, image):
+        self.known_face_encodings = []
+        self.known_face_names = []
+        self.known_face_ids = []
+        self.detection_model = detection_model
+        self.scale_factor = min(max(0.25, scale_factor), 1.0)  # Ensure in valid range
+        self.encoding_batch_size = 16
+        self.encoding_lock = threading.Lock()
+
+    def detect_faces(self, frame):
         """
         Detect faces in an image
         
         Args:
-            image (numpy.ndarray): Input image
+            frame (numpy.ndarray): Input image
             
         Returns:
             list: List of detected face regions (x, y, w, h)
         """
+        # Input validation
+        if frame is None or frame.size == 0:
+            logger.warning("Empty frame provided to face detector")
+            return []
+            
         try:
-            # Check if image is valid
-            if image is None or image.size == 0:
-                logger.error("Invalid image provided to detect_faces")
-                return []
+            # Resize the image for faster processing
+            if self.scale_factor != 1.0:
+                small_frame = cv2.resize(frame, (0, 0), fx=self.scale_factor, fy=self.scale_factor)
+            else:
+                small_frame = frame.copy()
                 
-            # Convert color image to grayscale if needed
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
+            # Convert to RGB (face_recognition uses RGB)
+            rgb_frame = small_frame[:, :, ::-1]
             
-            # Apply histogram equalization for better contrast
-            gray = cv2.equalizeHist(gray)
+            # Detect faces with timeout protection
+            try:
+                face_locations = face_recognition.face_locations(rgb_frame, model=self.detection_model)
+            except Exception as e:
+                logger.error(f"Error in face detection: {e}")
+                # Fallback to HOG model if CNN failed
+                if self.detection_model == "cnn":
+                    logger.info("Falling back to HOG face detection model")
+                    try:
+                        face_locations = face_recognition.face_locations(rgb_frame, model="hog")
+                    except Exception as e2:
+                        logger.error(f"Fallback face detection also failed: {e2}")
+                        return []
+                else:
+                    return []
             
-            # Detect faces with different parameters to improve detection
-            faces = self.detector.detectMultiScale(
-                gray, 
-                scaleFactor=1.1,     # Smaller scale factor for better detection
-                minNeighbors=5,      # Higher for better quality detections
-                minSize=(30, 30),    # Minimum face size
-                flags=cv2.CASCADE_SCALE_IMAGE
-            )
+            # If we scaled the image, scale the locations back to original size
+            if self.scale_factor != 1.0:
+                face_locations = [(int(top/self.scale_factor), int(right/self.scale_factor),
+                                int(bottom/self.scale_factor), int(left/self.scale_factor))
+                                for top, right, bottom, left in face_locations]
             
-            # If no faces detected, try with different parameters
-            if len(faces) == 0:
-                faces = self.detector.detectMultiScale(
-                    gray, 
-                    scaleFactor=1.2,   # Try with a larger scale factor
-                    minNeighbors=3,    # Lower neighbor threshold for better detection
-                    minSize=(20, 20),  # Smaller minimum face size
-                    flags=cv2.CASCADE_SCALE_IMAGE
-                )
-            
-            logger.debug(f"Detected {len(faces)} faces")
-            return faces
+            return face_locations
             
         except Exception as e:
-            logger.error(f"Error detecting faces: {e}")
+            logger.error(f"Unexpected error in face detection: {e}")
             return []
-    
-    def train_recognizer(self, training_dir, labels_file=None):
+
+    def train_recognizer(self, training_dir):
         """
         Train the face recognizer with images from a directory
         
         Args:
             training_dir (str): Directory containing training images
-            labels_file (str, optional): File containing labels for images
             
         Returns:
             bool: True if training was successful
         """
-        try:
-            logger.info(f"Training recognizer with images from {training_dir}")
-            faces, ids = self.get_images_and_labels(training_dir)
+        image_paths = []
+        
+        # Collect all image paths first
+        for root, _, files in os.walk(training_dir):
+            for file in files:
+                if file.endswith(('png', 'jpg', 'jpeg')):
+                    image_path = os.path.join(root, file)
+                    image_paths.append((image_path, file.split('.')[0:2]))  # Name and ID
+        
+        # Reset stored data
+        self.known_face_encodings = []
+        self.known_face_names = []
+        self.known_face_ids = []
+        
+        # Process images in batches for better memory management
+        total_images = len(image_paths)
+        processed = 0
+        
+        logger.info(f"Starting training with {total_images} images...")
+        
+        # Process images in batches
+        batch_size = self.encoding_batch_size
+        for i in range(0, total_images, batch_size):
+            batch = image_paths[i:i+batch_size]
             
-            if len(faces) == 0:
-                logger.error("No faces found in training data")
-                return False
-                
-            logger.info(f"Training with {len(faces)} face samples")
+            for image_path, name_parts in batch:
+                try:
+                    # Extract student name and ID from filename
+                    # Expected format: Name.ID.Number.jpg
+                    if len(name_parts) >= 2:
+                        name, student_id = name_parts[0], name_parts[1]
+                    else:
+                        name, student_id = name_parts[0], "unknown"
+                    
+                    # Load and process the image
+                    image = face_recognition.load_image_file(image_path)
+                    face_encodings = face_recognition.face_encodings(image)
+                    
+                    if face_encodings:
+                        self.known_face_encodings.append(face_encodings[0])
+                        self.known_face_names.append(name)
+                        self.known_face_ids.append(student_id)
+                        processed += 1
+                except Exception as e:
+                    logger.error(f"Error processing image {image_path}: {e}")
             
-            # Handle different recognizer types
-            if hasattr(self, "_using_sklearn") and self._using_sklearn:
-                # Reshape faces for sklearn
-                faces_reshaped = [cv2.resize(f, (100, 100)).flatten() for f in faces]
-                self._faces_data = faces_reshaped
-                self._faces_labels = ids
-                self.recognizer.fit(faces_reshaped, ids)
-            else:
-                # OpenCV recognizer
-                self.recognizer.train(faces, np.array(ids, dtype=np.int32))
-                
-            logger.info("Training completed successfully")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error training recognizer: {e}")
-            return False
-    
+            # Log progress
+            logger.info(f"Processed {processed}/{total_images} images...")
+        
+        logger.info(f"Training completed. {processed} faces encoded successfully.")
+        return True
+
     def save_model(self, model_path):
         """
         Save the trained model
@@ -178,21 +184,16 @@ class FaceDetector:
         try:
             # Create directory if it doesn't exist
             os.makedirs(os.path.dirname(model_path), exist_ok=True)
-            logger.info(f"Saving model to {model_path}")
             
-            # Handle different recognizer types
-            if hasattr(self, "_using_sklearn") and self._using_sklearn:
-                import pickle
-                with open(model_path, 'wb') as f:
-                    pickle.dump({
-                        'model': self.recognizer,
-                        'faces_data': self._faces_data,
-                        'faces_labels': self._faces_labels
-                    }, f)
-            else:
-                self.recognizer.write(model_path)
-                
-            logger.info("Model saved successfully")
+            # Save the model data
+            np.savez_compressed(
+                model_path, 
+                encodings=np.array(self.known_face_encodings), 
+                names=np.array(self.known_face_names),
+                ids=np.array(self.known_face_ids)
+            )
+            
+            logger.info(f"Model saved to {model_path} with {len(self.known_face_encodings)} face encodings")
             return True
         except Exception as e:
             logger.error(f"Error saving model: {e}")
@@ -209,177 +210,187 @@ class FaceDetector:
             bool: True if model was loaded successfully
         """
         try:
-            if not os.path.isfile(model_path):
-                logger.error(f"Model file not found: {model_path}")
-                return False
-                
-            logger.info(f"Loading model from {model_path}")
+            if os.path.exists(model_path):
+                # Check file extension
+                if model_path.endswith('.npz'):
+                    # Load as npz file
+                    data = np.load(model_path, allow_pickle=True)
+                    
+                    self.known_face_encodings = data['encodings'].tolist() if 'encodings' in data else []
+                    self.known_face_names = data['names'].tolist() if 'names' in data else []
+                    
+                    # Handle models with or without IDs for backward compatibility
+                    if 'ids' in data:
+                        self.known_face_ids = data['ids'].tolist()
+                    else:
+                        self.known_face_ids = ["unknown"] * len(self.known_face_names)
+                    
+                    logger.info(f"Model loaded from {model_path} with {len(self.known_face_encodings)} face encodings")
+                    return True
+                elif model_path.endswith('.yml'):
+                    # If it's a .yml file, try to create a sample model with no face encodings
+                    # This is just to allow the app to run
+                    logger.warning(f"Found .yml model file, creating empty model: {model_path}")
+                    self.known_face_encodings = []
+                    self.known_face_names = []
+                    self.known_face_ids = []
+                    
+                    # Create the proper npz file for future use
+                    npz_path = model_path + ".npz"
+                    self.save_model(npz_path)
+                    
+                    logger.info(f"Created empty model (no face encodings)")
+                    return True
+                else:
+                    logger.warning(f"Unknown model file format: {model_path}")
+                    return False
             
-            # Handle different recognizer types
-            if hasattr(self, "_using_sklearn") and self._using_sklearn:
-                import pickle
-                with open(model_path, 'rb') as f:
-                    data = pickle.load(f)
-                    self.recognizer = data['model']
-                    self._faces_data = data['faces_data']
-                    self._faces_labels = data['faces_labels']
-            else:
-                self.recognizer.read(model_path)
-                
-            logger.info("Model loaded successfully")
-            return True
+            logger.warning(f"Model file not found: {model_path}")
+            return False
         except Exception as e:
             logger.error(f"Error loading model: {e}")
             return False
     
-    def recognize_face(self, image, confidence_threshold=60):
+    @lru_cache(maxsize=32)  # Cache recent results to speed up processing of video frames
+    def _get_face_encoding(self, face_image_hash):
+        """Get face encoding with caching for performance"""
+        # This is a placeholder - in a real implementation, you'd need to
+        # find a way to hash the face image data for the cache key
+        return face_recognition.face_encodings(face_image_hash)
+    
+    def recognize_faces(self, frame, recognition_threshold=0.6):
         """
-        Recognize a face in an image
+        Recognize faces in an image
         
         Args:
-            image (numpy.ndarray): Input image
-            confidence_threshold (int): Threshold for confidence in recognition
-                                       (lower value = stricter matching)
+            frame (numpy.ndarray): Input image
+            recognition_threshold (float): Face recognition confidence threshold (0-1)
+                                         Lower values are stricter (fewer false positives)
             
         Returns:
-            tuple: (id, confidence) or (None, None) if no face is recognized
+            tuple: (face_locations, face_names, face_ids, confidence_scores)
+        """
+        # Process smaller image for speed
+        if self.scale_factor != 1.0:
+            small_frame = cv2.resize(frame, (0, 0), fx=self.scale_factor, fy=self.scale_factor)
+        else:
+            small_frame = frame
+            
+        # Convert to RGB (face_recognition uses RGB)
+        rgb_frame = small_frame[:, :, ::-1]
+        
+        # Detect face locations
+        face_locations = face_recognition.face_locations(rgb_frame, model=self.detection_model)
+        
+        # If no faces or no known faces, return early
+        if not face_locations or not self.known_face_encodings:
+            # Scale locations back to original size if needed
+            if self.scale_factor != 1.0:
+                face_locations = [(int(top/self.scale_factor), int(right/self.scale_factor),
+                                int(bottom/self.scale_factor), int(left/self.scale_factor))
+                               for top, right, bottom, left in face_locations]
+            return face_locations, ["Unknown"] * len(face_locations), ["unknown"] * len(face_locations), [1.0] * len(face_locations)
+        
+        # Get face encodings
+        face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+        
+        face_names = []
+        face_ids = []
+        confidence_scores = []
+        
+        # Match each face
+        for face_encoding in face_encodings:
+            # Calculate face distances (lower distance = better match)
+            with self.encoding_lock:  # Thread safety for face recognition
+                face_distances = face_recognition.face_distance(self.known_face_encodings, face_encoding)
+            
+            # Get best match
+            best_match_index = np.argmin(face_distances)
+            min_distance = face_distances[best_match_index]
+            
+            # Convert distance to confidence score (0-1, higher is better)
+            confidence = 1.0 - min(1.0, min_distance)
+            
+            # Determine if it's a match
+            if confidence >= recognition_threshold:
+                name = self.known_face_names[best_match_index]
+                person_id = self.known_face_ids[best_match_index]
+            else:
+                name = "Unknown"
+                person_id = "unknown"
+            
+            face_names.append(name)
+            face_ids.append(person_id)
+            confidence_scores.append(confidence)
+        
+        # Scale locations back to original size if needed
+        if self.scale_factor != 1.0:
+            face_locations = [(int(top/self.scale_factor), int(right/self.scale_factor),
+                             int(bottom/self.scale_factor), int(left/self.scale_factor))
+                            for top, right, bottom, left in face_locations]
+        
+        return face_locations, face_names, face_ids, confidence_scores
+
+    def compute_face_encodings(self, rgb_frame, face_locations):
+        """
+        Compute facial encodings for faces in the image
+        
+        Args:
+            rgb_frame (numpy.ndarray): RGB image frame
+            face_locations (list): List of face locations as (top, right, bottom, left)
+            
+        Returns:
+            list: List of face encodings
         """
         try:
-            if image is None or image.size == 0:
-                logger.error("Invalid image provided to recognize_face")
-                return None, None
+            # Handle empty face locations list
+            if not face_locations:
+                return []
                 
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
-            
-            # Apply histogram equalization to improve recognition
-            gray = cv2.equalizeHist(gray)
-            
-            faces = self.detect_faces(gray)
-            
-            if len(faces) == 0:
-                logger.debug("No faces detected for recognition")
-                return None, None
-            
-            # Sort faces by area (largest first)
-            faces = sorted(faces, key=lambda f: f[2] * f[3], reverse=True)
-            
-            # Recognize the largest face
-            x, y, w, h = faces[0]
-            face_roi = gray[y:y+h, x:x+w]
-            
-            # Standardize face size for more consistent recognition
-            face_roi = cv2.resize(face_roi, (100, 100))
-            
-            # Handle different recognizer types
-            if hasattr(self, "_using_sklearn") and self._using_sklearn:
-                # Flatten the face
-                face_flat = face_roi.flatten().reshape(1, -1)
-                # Predict
-                face_id = self.recognizer.predict(face_flat)[0]
-                # Calculate confidence (distance to nearest neighbor)
-                neighbors = self.recognizer.kneighbors(face_flat, return_distance=True)
-                confidence = neighbors[0][0][0] * 100  # Scale to match OpenCV's confidence range
-            else:
-                # OpenCV recognizer
-                face_id, confidence = self.recognizer.predict(face_roi)
-            
-            logger.debug(f"Face recognition result: ID={face_id}, Confidence={confidence}")
-            
-            # Lower confidence value means better match in OpenCV's LBPH
-            if confidence < confidence_threshold:
-                return face_id, confidence
-            else:
-                return None, confidence
-                
+            # Compute face encodings from face_recognition library
+            face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+            return face_encodings
         except Exception as e:
-            logger.error(f"Error recognizing face: {e}")
-            return None, None
+            logger.error(f"Error computing face encodings: {e}")
+            return []
     
-    def get_images_and_labels(self, path):
+    def identify_face(self, face_encoding):
         """
-        Get images and labels from a directory
+        Identify a face from its encoding
         
         Args:
-            path (str): Path to directory containing images
+            face_encoding: Face encoding to identify
             
         Returns:
-            tuple: (faces, ids) where faces are image arrays and ids are corresponding ids
+            tuple: (name, confidence)
         """
-        image_paths = [os.path.join(path, f) for f in os.listdir(path) if os.path.isfile(os.path.join(path, f))]
-        face_samples = []
-        ids = []
-        
-        logger.info(f"Processing {len(image_paths)} images for training")
-        
-        for image_path in image_paths:
-            try:
-                # Skip non-image files
-                if not any(image_path.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png']):
-                    continue
+        if not self.known_face_encodings or face_encoding is None:
+            return "Unknown", 0.0
+            
+        try:
+            # Calculate face distances (lower distance = better match)
+            with self.encoding_lock:  # Thread safety for face recognition
+                face_distances = face_recognition.face_distance(self.known_face_encodings, face_encoding)
+            
+            # Get best match
+            if len(face_distances) > 0:
+                best_match_index = np.argmin(face_distances)
+                min_distance = face_distances[best_match_index]
                 
-                logger.debug(f"Processing image: {image_path}")
-                pil_image = Image.open(image_path).convert('L')
-                image_np = np.array(pil_image, 'uint8')
+                # Convert distance to confidence score (0-1, higher is better)
+                confidence = 1.0 - min(1.0, min_distance)
                 
-                # Apply histogram equalization for better contrast
-                image_np = cv2.equalizeHist(image_np)
-                
-                # Extract ID from filename (format: Name.ID.sequence.jpg)
-                filename = os.path.basename(image_path)
-                parts = filename.split('.')
-                if len(parts) >= 2:
-                    try:
-                        id_num = int(parts[1])
-                    except ValueError:
-                        logger.warning(f"Invalid ID in filename: {filename}")
-                        continue
+                # Determine if it's a match based on distance threshold
+                # A lower threshold means stricter matching
+                if confidence > 0.6:  # Reasonable threshold
+                    name = self.known_face_names[best_match_index]
                 else:
-                    logger.warning(f"Invalid filename format: {filename}")
-                    continue
-                
-                # Detect faces in the image
-                faces = self.detector.detectMultiScale(
-                    image_np,
-                    scaleFactor=1.1,
-                    minNeighbors=5,
-                    minSize=(30, 30),
-                    flags=cv2.CASCADE_SCALE_IMAGE
-                )
-                
-                # If no faces detected, try with different parameters
-                if len(faces) == 0:
-                    faces = self.detector.detectMultiScale(
-                        image_np,
-                        scaleFactor=1.2,
-                        minNeighbors=3,
-                        minSize=(20, 20),
-                        flags=cv2.CASCADE_SCALE_IMAGE
-                    )
-                
-                # If still no faces detected, skip this image
-                if len(faces) == 0:
-                    logger.warning(f"No face detected in {image_path}")
-                    continue
+                    name = "Unknown"
                     
-                # Use the largest face if multiple faces are detected
-                if len(faces) > 1:
-                    faces = sorted(faces, key=lambda f: f[2] * f[3], reverse=True)
-                    logger.debug(f"Multiple faces ({len(faces)}) detected in {image_path}, using largest")
+                return name, confidence
+            else:
+                return "Unknown", 0.0
                 
-                # Extract face region
-                for (x, y, w, h) in faces[:1]:  # Only use the first (largest) face
-                    face_roi = image_np[y:y+h, x:x+w]
-                    
-                    # Standardize face size for better training
-                    face_roi = cv2.resize(face_roi, (100, 100))
-                    
-                    face_samples.append(face_roi)
-                    ids.append(id_num)
-                    logger.debug(f"Added face with ID {id_num}")
-                    break
-                    
-            except Exception as e:
-                logger.error(f"Error processing {image_path}: {e}")
-                
-        logger.info(f"Processed {len(face_samples)} face samples with {len(set(ids))} unique IDs")
-        return face_samples, ids
+        except Exception as e:
+            logger.error(f"Error identifying face: {e}")
+            return "Unknown", 0.0

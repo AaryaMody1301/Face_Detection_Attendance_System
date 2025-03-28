@@ -78,6 +78,9 @@ def main():
 
     # Run app command
     app_parser = subparsers.add_parser("app", help="Start the GUI application")
+    app_parser.add_argument(
+        "--modern", action="store_true", help="Use the modern UI with CustomTkinter"
+    )
 
     args = parser.parse_args()
 
@@ -87,13 +90,29 @@ def main():
 
     try:
         if args.command == "app":
-            # Import the UI module and start the application
-            from src.ui.app import FaceAttendanceApp
-            import tkinter as tk
+            # Check if using modern UI
+            if hasattr(args, 'modern') and args.modern:
+                try:
+                    # Import the Modern UI module and start the application
+                    from src.ui.modern_app import FaceAttendanceModernApp
+                    import customtkinter as ctk
+                    
+                    root = ctk.CTk()
+                    app = FaceAttendanceModernApp(root)
+                    root.mainloop()
+                except ImportError as e:
+                    print(f"Error: {e}")
+                    print("CustomTkinter may not be installed. Install it with:")
+                    print("pip install customtkinter")
+                    return 1
+            else:
+                # Import the traditional UI module and start the application
+                from src.ui.app import FaceAttendanceApp
+                import tkinter as tk
 
-            root = tk.Tk()
-            app = FaceAttendanceApp(root)
-            root.mainloop()
+                root = tk.Tk()
+                app = FaceAttendanceApp(root)
+                root.mainloop()
             return 0
 
         # Import the appropriate module based on the command
@@ -118,4 +137,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main()) 
+    sys.exit(main())

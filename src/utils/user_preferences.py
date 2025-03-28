@@ -14,6 +14,59 @@ logger = logging.getLogger(__name__)
 
 # Default preferences
 DEFAULT_PREFERENCES = {
+    # Camera settings
+    "camera": {
+        "device": "Auto-detect (default)",
+        "resolution": "640x480",
+        "fps": 30,
+        "flip_image": False,
+        "auto_focus": True,
+        "auto_exposure": True
+    },
+    
+    # Face detection settings
+    "face_detection": {
+        "confidence_threshold": 60,
+        "min_frames": 3,
+        "detection_method": "hog",  # 'hog' or 'cnn'
+        "use_gpu": False,
+        "face_model": "HOG"
+    },
+    
+    # Application settings
+    "application": {
+        "theme": "system",  # 'light', 'dark', or 'system'
+        "language": "en",
+        "startup_mode": "default",  # 'default', 'minimized', or 'fullscreen'
+        "check_updates": True,
+        "show_splash": True
+    },
+    
+    # Training settings
+    "training": {
+        "samples_per_person": 20,
+        "augment_data": True,
+        "model_type": "standard"  # 'standard', 'light', or 'enhanced'
+    },
+    
+    # UI settings
+    "ui": {
+        "show_status_bar": True,
+        "show_toolbar": True,
+        "confirm_exit": True,
+        "auto_save": True
+    },
+    
+    # Attendance settings
+    "attendance": {
+        "default_subject": "",
+        "auto_export": False,
+        "export_format": "csv",
+        "folder_structure": "date",  # 'date', 'subject', or 'flat'
+        "duplicate_action": "update"  # 'update', 'skip', or 'create_new'
+    },
+    
+    # Chart colors for analytics
     "chart_colors": {
         "primary": "#1976D2",
         "secondary": "#FFA000",
@@ -253,4 +306,62 @@ class UserPreferences:
             "fonts": self.get_preference("chart_fonts"),
             "style": self.get_preference("chart_style")
         }
-        return theme 
+        return theme
+    
+    # Camera-related convenience methods
+    def get_camera_settings(self):
+        """
+        Get all camera settings
+        
+        Returns:
+            dict: Camera settings
+        """
+        return self.get_preference("camera", default={})
+    
+    def set_camera_device(self, device_id):
+        """
+        Set preferred camera device
+        
+        Args:
+            device_id: Camera device identifier
+            
+        Returns:
+            bool: True if successful
+        """
+        return self.set_preference("camera", "device", device_id)
+    
+    def get_camera_resolution(self):
+        """
+        Get camera resolution as a tuple (width, height)
+        
+        Returns:
+            tuple: Resolution as (width, height)
+        """
+        resolution_str = self.get_preference("camera", "resolution", "640x480")
+        try:
+            width, height = map(int, resolution_str.split("x"))
+            return width, height
+        except:
+            return 640, 480
+    
+    # Application-related convenience methods
+    def get_app_theme(self):
+        """
+        Get application theme
+        
+        Returns:
+            str: Theme name
+        """
+        return self.get_preference("application", "theme", "system")
+    
+    def set_app_theme(self, theme):
+        """
+        Set application theme
+        
+        Args:
+            theme (str): Theme name
+            
+        Returns:
+            bool: True if successful
+        """
+        return self.set_preference("application", "theme", theme)

@@ -1,0 +1,57 @@
+{
+    "ui": {
+        "theme": "system",
+        "font_size": "medium",
+        "animations": true
+    },
+    "camera": {
+        "device_id": 0,
+        "resolution": [
+            1280,
+            720
+        ],
+        "fps": 30
+    },
+    "face_recognition": {
+        "detection_model": "hog",
+        "scale_factor": 0.5,
+        "recognition_threshold": 0.6,
+        "min_face_size": 30,
+        "max_faces": 10,
+        "stabilization_frames": 3
+    },
+    "video": {
+        "width": 640,
+        "height": 480,
+        "fps": 30,
+        "buffer_size": 3
+    },
+    "face_detection": {
+        "confidence_threshold": 0.6,
+        "min_face_size": 30,
+        "max_faces": 20,
+        "processing_scale": 0.75,
+        "stabilization": true,
+        "stabilization_frames": 5
+    },
+    "database": {
+        "connection_pool_size": 10,
+        "timeout": 30,
+        "backup_enabled": true,
+        "backup_interval_days": 7
+    },
+    "memory": {
+        "performance_monitoring": false
+    },
+    "performance_profile": "high",
+    "data_paths": {
+        "attendance": "Attendance",
+        "training_images": "TrainingImage",
+        "student_details": "StudentDetails"
+    },
+    "advanced": {
+        "debug_mode": false,
+        "memory_management": "auto",
+        "log_level": "info"
+    }
+}

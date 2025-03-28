@@ -20,24 +20,17 @@ class AnalyticsDashboard:
     Analytics Dashboard Window for attendance visualization
     """
     
-    def __init__(self, parent=None):
+    def __init__(self, root):
         """
         Initialize the analytics dashboard
         
         Args:
-            parent (tk.Tk, optional): Parent window
+            root (tk.Tk): Root window
         """
-        # Create new window if parent is provided
-        if parent:
-            self.window = tk.Toplevel(parent)
-            self.window.transient(parent)  # Set as transient to parent window
-        else:
-            self.window = tk.Tk()
-            
-        self.window.title("Attendance Analytics Dashboard")
-        self.window.geometry("1200x800")
-        self.window.configure(background='#f0f0f0')
-        self.window.minsize(1000, 700)
+        self.root = root
+        self.root.title("Attendance Analytics Dashboard")
+        self.root.geometry("1200x800")
+        self.root.configure(background='white')
         
         # Initialize analytics engine
         self.analytics = AttendanceAnalytics()
@@ -54,29 +47,12 @@ class AnalyticsDashboard:
         self.setup_ui()
         
         # Load data when window is shown
-        self.window.after(100, self.load_data_async)
+        self.root.after(100, self.load_data_async)
     
     def setup_ui(self):
         """Setup the user interface components"""
-        # Main container
-        self.main_container = tk.Frame(self.window, bg='#f0f0f0')
-        self.main_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
         # Header with title and controls
         self.setup_header()
-        
-        # Main content area (split into left and right)
-        self.content_frame = tk.Frame(self.main_container, bg='#f0f0f0')
-        self.content_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        # Left side - controls and summary
-        self.left_frame = tk.Frame(self.content_frame, bg='#f0f0f0', width=300)
-        self.left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
-        self.left_frame.pack_propagate(False)  # Prevent frame from shrinking
-        
-        # Right side - visualization area
-        self.right_frame = tk.Frame(self.content_frame, bg='white', bd=1, relief=tk.GROOVE)
-        self.right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Setup the left panel with controls
         self.setup_control_panel()
@@ -85,12 +61,12 @@ class AnalyticsDashboard:
         self.setup_visualization_panel()
         
         # Status bar
-        self.status_bar = tk.Label(self.window, text="Ready", bd=1, relief=tk.SUNKEN, anchor=tk.W)
+        self.status_bar = tk.Label(self.root, text="Ready", bd=1, relief=tk.SUNKEN, anchor=tk.W)
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
     
     def setup_header(self):
         """Setup the header section with title and controls"""
-        header_frame = tk.Frame(self.main_container, bg='#f0f0f0', height=50)
+        header_frame = tk.Frame(self.root, bg='#f0f0f0', height=50)
         header_frame.pack(fill=tk.X, padx=5, pady=5)
         
         # Title
@@ -128,7 +104,7 @@ class AnalyticsDashboard:
     
     def setup_control_panel(self):
         """Setup the control panel on the left side"""
-        control_frame = tk.LabelFrame(self.left_frame, text="Controls", 
+        control_frame = tk.LabelFrame(self.root, text="Controls", 
                                      bg='#f0f0f0', font=('Helvetica', 12))
         control_frame.pack(fill=tk.X, padx=5, pady=5, ipady=5)
         
@@ -148,7 +124,7 @@ class AnalyticsDashboard:
         
         tk.Label(student_frame, text="Student:", bg='#f0f0f0').pack(side=tk.LEFT)
         
-        self.student_combo = ttk.Combobox(subject_frame, textvariable=self.selected_student)
+        self.student_combo = ttk.Combobox(student_frame, textvariable=self.selected_student)
         self.student_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
         self.student_combo.bind("<<ComboboxSelected>>", self.on_student_selected)
         
@@ -235,7 +211,7 @@ class AnalyticsDashboard:
         heatmap_btn.pack(fill=tk.X, padx=5, pady=2)
         
         # Summary section
-        self.summary_frame = tk.LabelFrame(self.left_frame, text="Summary", 
+        self.summary_frame = tk.LabelFrame(self.root, text="Summary", 
                                          bg='#f0f0f0', font=('Helvetica', 12))
         self.summary_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
@@ -247,6 +223,10 @@ class AnalyticsDashboard:
     
     def setup_visualization_panel(self):
         """Setup the visualization panel on the right side"""
+        # Right side - visualization area
+        self.right_frame = tk.Frame(self.root, bg='white', bd=1, relief=tk.GROOVE)
+        self.right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
         # Title for the visualization
         self.chart_title = tk.Label(self.right_frame, text="Attendance Visualization", 
                                   font=('Helvetica', 14, 'bold'), bg='white')
@@ -296,12 +276,12 @@ class AnalyticsDashboard:
             success = self.analytics.load_attendance_data()
             
             # Update UI in the main thread
-            self.window.after(0, self.update_ui_after_loading, success)
+            self.root.after(0, self.update_ui_after_loading, success)
             
         except Exception as e:
             # Update status in main thread
-            self.window.after(0, self.update_status, f"Error loading data: {e}")
-            self.window.after(0, self.enable_controls)
+            self.root.after(0, self.update_status, f"Error loading data: {e}")
+            self.root.after(0, self.enable_controls)
     
     def update_ui_after_loading(self, success):
         """Update UI after data is loaded"""
@@ -547,16 +527,16 @@ class AnalyticsDashboard:
     def update_status(self, message):
         """Update the status bar message"""
         self.status_bar.config(text=message)
-        self.window.update_idletasks()
+        self.root.update_idletasks()
     
     def disable_controls(self):
         """Disable UI controls during data loading"""
-        for widget in self.window.winfo_children():
+        for widget in self.root.winfo_children():
             self._set_widget_state(widget, tk.DISABLED)
     
     def enable_controls(self):
         """Enable UI controls after data loading"""
-        for widget in self.window.winfo_children():
+        for widget in self.root.winfo_children():
             self._set_widget_state(widget, tk.NORMAL)
     
     def _set_widget_state(self, widget, state):
@@ -579,14 +559,15 @@ class AnalyticsDashboard:
     
     def run(self):
         """Run the application"""
-        self.window.mainloop()
+        self.root.mainloop()
 
 
 def main():
     """Main function to run the analytics dashboard standalone"""
-    app = AnalyticsDashboard()
+    root = tk.Tk()
+    app = AnalyticsDashboard(root)
     app.run()
 
 
 if __name__ == "__main__":
-    main() 
+    main()

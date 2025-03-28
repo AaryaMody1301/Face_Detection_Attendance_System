@@ -83,7 +83,11 @@ def take_attendance(subject, model_path="TrainingImageLabel/Trainner.yml",
     
     # Dictionary to keep track of recognized students
     recognized_students = {}
+    late_students = {}  # Dictionary to track students arriving late
     start_time = time.time()
+    
+    # Define late threshold (in seconds, e.g., 5 minutes = 300 seconds)
+    late_threshold = 300  # Can be made configurable
     
     # Face recognition stabilizer to reduce false positives
     recognition_buffer = {}  # Format: {face_id: [sequence of confidences]}
@@ -139,14 +143,27 @@ def take_attendance(subject, model_path="TrainingImageLabel/Trainner.yml",
                         
                         # Mark attendance if not already marked
                         student_key = f"{face_id}_{student_name}"
+                        current_elapsed = time.time() - start_time
+                        
                         if student_key not in recognized_students:
                             db.mark_attendance(str(face_id), student_name, file_path=attendance_file)
+                            
+                            # Check if student is late
+                            if current_elapsed > late_threshold:
+                                late_students[student_key] = True
+                                logger.info(f"Marked LATE attendance for {student_name} (ID: {face_id})")
+                            else:
+                                logger.info(f"Marked attendance for {student_name} (ID: {face_id})")
+                                
                             recognized_students[student_key] = True
-                            logger.info(f"Marked attendance for {student_name} (ID: {face_id})")
                         
                         # Display name on frame
                         label = f"{student_name} ({face_id})"
-                        color = (0, 255, 0)  # Green for good match
+                        if student_key in late_students:
+                            label += " (LATE)"
+                            color = (0, 0, 255)  # Red for late students
+                        else:
+                            color = (0, 255, 0)  # Green for good match
                     else:
                         # Unknown student ID
                         label = f"Unknown ID: {face_id}"
@@ -182,6 +199,35 @@ def take_attendance(subject, model_path="TrainingImageLabel/Trainner.yml",
             cv2.putText(display_frame, time_text, (10, 90),
                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             
+            # Display list of present students on the right side
+            y_offset = 30
+            cv2.putText(display_frame, "Students Present:", (display_frame.shape[1] - 250, y_offset),
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+            y_offset += 30
+            
+            # Sort students alphabetically for consistent display
+            present_students = sorted([key.split('_', 1)[1] for key in recognized_students.keys()])
+            
+            for i, student_name in enumerate(present_students):
+                # Highlight late students in red
+                student_key = next((k for k in recognized_students if k.split('_', 1)[1] == student_name), None)
+                if student_key in late_students:
+                    color = (0, 0, 255)  # Red for late
+                    text = f"{i+1}. {student_name} (LATE)"
+                else:
+                    color = (0, 255, 0)  # Green for on time
+                    text = f"{i+1}. {student_name}"
+                
+                cv2.putText(display_frame, text, (display_frame.shape[1] - 250, y_offset),
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                y_offset += 25
+                
+                # Check if we're running out of vertical space
+                if y_offset > display_frame.shape[0] - 10:
+                    cv2.putText(display_frame, "... more", (display_frame.shape[1] - 250, y_offset),
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                    break
+            
             # Show frame
             if show_window:
                 cv2.imshow("Attendance System", display_frame)
@@ -216,11 +262,47 @@ def take_attendance(subject, model_path="TrainingImageLabel/Trainner.yml",
         logger.info("Students present:")
         for student_key in recognized_students:
             student_id, student_name = student_key.split("_", 1)
-            logger.info(f"  - {student_name} (ID: {student_id})")
+            status = "LATE" if student_key in late_students else "ON TIME"
+            logger.info(f"  - {student_name} (ID: {student_id}) - {status}")
     else:
         logger.warning("No students were recognized during this session.")
     
+    # Create auto-backup of the attendance file
+    if recognized_students:
+        _create_attendance_backup(attendance_file)
+    
     return attendance_file
+
+
+def _create_attendance_backup(attendance_file):
+    """
+    Create a backup of the attendance file.
+    
+    Args:
+        attendance_file (str): Path to the attendance file
+    """
+    try:
+        if os.path.exists(attendance_file):
+            # Extract filename from path
+            filename = os.path.basename(attendance_file)
+            
+            # Extract subject from filename
+            subject = filename.split('_')[0]
+            
+            # Create backup directory if it doesn't exist
+            backup_dir = os.path.join("backups", "attendance_backup", subject)
+            os.makedirs(backup_dir, exist_ok=True)
+            
+            # Create backup file
+            backup_file = os.path.join(backup_dir, filename)
+            with open(attendance_file, 'r') as src, open(backup_file, 'w') as dst:
+                dst.write(src.read())
+                
+            logger.info(f"Created backup of attendance file: {backup_file}")
+            return True
+    except Exception as e:
+        logger.error(f"Error creating backup: {e}")
+    return False
 
 
 def main_with_args(args):
@@ -247,6 +329,8 @@ def main():
                       help="Don't show the video window")
     parser.add_argument("--timeout", type=int, default=60,
                       help="Timeout in seconds (0 for no timeout)")
+    parser.add_argument("--late-threshold", type=int, default=300,
+                      help="Seconds after which a student is marked as late (0 to disable)")
     
     args = parser.parse_args()
     

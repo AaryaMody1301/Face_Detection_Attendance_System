@@ -1,724 +1,671 @@
 """
-Authentication system for the Face Detection Attendance System
+Authentication System for the Face Detection Attendance System
+
+This module provides the authentication system for the application,
+handling user login, permissions, and session management.
 """
 import os
-import hashlib
-import datetime
+import time
 import logging
-import sqlite3
+import hashlib
+import json
 import secrets
-import string
-from pathlib import Path
+import datetime
+from typing import Dict, Any, Optional, List, Union
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+from ..database.db_manager import DatabaseManager
+from ..utils.app_config import AppConfig
+from ..utils.exceptions import AuthenticationError, AuthorizationError, DatabaseError
+
+# Configure logger
 logger = logging.getLogger(__name__)
 
-class AuthenticationSystem:
+class AuthSystem:
     """
-    Authentication system for user login and session management
+    Authentication System class for managing user authentication and authorization
+    
+    Attributes:
+        db: Database connection
+        config: Application configuration
+        current_user: Currently authenticated user
+        is_authenticated_flag: Whether a user is currently authenticated
+        session_start_time: Time when the current session started
     """
     
-    def __init__(self, db_path=None):
+    def __init__(self, db_connection=None, require_login: bool = False):
         """
-        Initialize the authentication system
+        Initialize authentication system
         
         Args:
-            db_path (str, optional): Path to SQLite database file
+            db_connection: Database connection to use
+            require_login: Whether authentication is required to use the application
         """
-        if db_path is None:
-            # Use default path
-            data_dir = os.path.join(".", "Data")
-            os.makedirs(data_dir, exist_ok=True)
-            db_path = os.path.join(data_dir, "attendance.db")
-        
-        self.db_path = db_path
-        self._initialize_database()
+        self.db = db_connection if db_connection else DatabaseManager()
+        self.config = AppConfig()
         self.current_user = None
-        self.session_token = None
+        self.is_authenticated_flag = False
+        self.session_start_time = None
+        self.require_login = require_login
+        
+        # Initialize authentication system
+        self._initialize()
     
-    def _initialize_database(self):
-        """Initialize user tables in the database if they don't exist"""
+    def _initialize(self):
+        """Initialize the authentication system"""
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Create Users table if it doesn't exist
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Users (
-                id INTEGER PRIMARY KEY,
-                username TEXT UNIQUE,
-                password_hash TEXT,
-                salt TEXT,
-                role TEXT,
-                full_name TEXT,
-                email TEXT,
-                created_date TEXT,
-                last_login TEXT,
-                is_active INTEGER DEFAULT 1
-            )
-            ''')
-            
-            # Create Sessions table for tracking user sessions
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Sessions (
-                id INTEGER PRIMARY KEY,
-                user_id INTEGER,
-                token TEXT UNIQUE,
-                created_at TEXT,
-                expires_at TEXT,
-                ip_address TEXT,
-                is_active INTEGER DEFAULT 1,
-                FOREIGN KEY (user_id) REFERENCES Users(id)
-            )
-            ''')
-            
-            # Create LoginAttempts table for tracking failed login attempts
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS LoginAttempts (
-                id INTEGER PRIMARY KEY,
-                username TEXT,
-                ip_address TEXT,
-                attempt_time TEXT,
-                success INTEGER
-            )
-            ''')
+            # Create users table if it doesn't exist
+            self._ensure_tables_exist()
             
             # Create default admin user if no users exist
-            cursor.execute("SELECT COUNT(*) FROM Users")
-            if cursor.fetchone()[0] == 0:
-                self.create_user(
-                    username="admin",
-                    password="admin",
-                    role="admin",
-                    full_name="System Administrator",
-                    email="admin@example.com"
-                )
-                logger.info("Created default admin user")
+            self._create_default_users()
             
-            conn.commit()
-            conn.close()
-            logger.info("Authentication database initialized successfully")
+            logger.info("Authentication system initialized")
         except Exception as e:
-            logger.error(f"Error initializing authentication database: {e}")
+            logger.error(f"Error initializing authentication system: {e}")
+            raise
     
-    def create_user(self, username, password, role="user", full_name=None, email=None):
-        """
-        Create a new user
-        
-        Args:
-            username (str): Username for the new user
-            password (str): Password for the new user
-            role (str, optional): User role (admin, teacher, user)
-            full_name (str, optional): User's full name
-            email (str, optional): User's email address
-            
-        Returns:
-            bool: True if user was created successfully
-        """
+    def _ensure_tables_exist(self):
+        """Ensure the necessary tables exist in the database"""
         try:
-            # Generate a random salt
-            salt = self._generate_salt()
+            # Create users table
+            self.db.execute_query('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                salt TEXT NOT NULL,
+                full_name TEXT,
+                email TEXT,
+                role TEXT NOT NULL DEFAULT 'user',
+                last_login TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_active INTEGER DEFAULT 1
+            )
+            ''', commit=True)
             
-            # Hash the password with the salt
-            password_hash = self._hash_password(password, salt)
+            # Create user_sessions table
+            self.db.execute_query('''
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                session_token TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP NOT NULL,
+                ip_address TEXT,
+                is_active INTEGER DEFAULT 1,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+            ''', commit=True)
             
-            # Get current timestamp
-            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # Create login_attempts table for tracking failed logins
+            self.db.execute_query('''
+            CREATE TABLE IF NOT EXISTS login_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL,
+                ip_address TEXT,
+                attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                success INTEGER DEFAULT 0
+            )
+            ''', commit=True)
             
-            # Connect to database
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Check if username already exists
-            cursor.execute("SELECT id FROM Users WHERE username = ?", (username,))
-            if cursor.fetchone():
-                logger.warning(f"Username '{username}' already exists")
-                conn.close()
-                return False
-            
-            # Insert new user
-            cursor.execute(
-                """
-                INSERT INTO Users 
-                (username, password_hash, salt, role, full_name, email, created_date) 
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (username, password_hash, salt, role, full_name, email, now)
+            logger.debug("Authentication tables created")
+        except Exception as e:
+            logger.error(f"Error creating authentication tables: {e}")
+            raise DatabaseError(f"Failed to create authentication tables: {e}")
+    
+    def _create_default_users(self):
+        """Create default users if no users exist"""
+        try:
+            # Check if any users exist
+            result = self.db.execute_query(
+                "SELECT COUNT(*) FROM users", 
+                fetch_one=True
             )
             
-            conn.commit()
-            conn.close()
-            logger.info(f"User '{username}' created successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Error creating user: {e}")
-            return False
-    
-    def authenticate(self, username, password, ip_address=None):
-        """
-        Authenticate a user
-        
-        Args:
-            username (str): Username
-            password (str): Password
-            ip_address (str, optional): IP address of the client
-            
-        Returns:
-            dict: User information if authentication is successful, None otherwise
-        """
-        try:
-            # Connect to database
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Get user record
-            cursor.execute(
-                "SELECT id, username, password_hash, salt, role, full_name, email FROM Users WHERE username = ? AND is_active = 1",
-                (username,)
-            )
-            user_record = cursor.fetchone()
-            
-            # Record login attempt
-            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            success = 0
-            
-            if user_record:
-                user_id, db_username, db_password_hash, salt, role, full_name, email = user_record
+            if result and result.get('COUNT(*)', 0) == 0:
+                # Create default admin user
+                admin_username = self.config.get_secret("security.default_admin_username", "admin")
+                admin_password = self.config.get_secret("security.default_admin_password", "admin123")
                 
-                # Hash the provided password with the stored salt
-                password_hash = self._hash_password(password, salt)
+                # Hash the password
+                salt = secrets.token_hex(16)  # Generate random salt
+                password_hash = self._hash_password(admin_password, salt)
                 
-                # Compare password hashes
-                if password_hash == db_password_hash:
-                    # Authentication successful
-                    success = 1
-                    
-                    # Create user session
-                    session_token = self._generate_session_token()
-                    expires_at = (datetime.datetime.now() + datetime.timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
-                    
-                    # Store session
-                    cursor.execute(
-                        """
-                        INSERT INTO Sessions 
-                        (user_id, token, created_at, expires_at, ip_address) 
-                        VALUES (?, ?, ?, ?, ?)
-                        """,
-                        (user_id, session_token, now, expires_at, ip_address)
-                    )
-                    
-                    # Update last login time
-                    cursor.execute(
-                        "UPDATE Users SET last_login = ? WHERE id = ?",
-                        (now, user_id)
-                    )
-                    
-                    conn.commit()
-                    
-                    # Store current session
-                    self.current_user = {
-                        'id': user_id,
-                        'username': db_username,
-                        'role': role,
-                        'full_name': full_name,
-                        'email': email
-                    }
-                    self.session_token = session_token
-                    
-                    logger.info(f"User '{username}' authenticated successfully")
-                    
-                    # Return user info
-                    user_info = self.current_user.copy()
-                    conn.close()
-                    return user_info
-            
-            # Record failed login attempt
-            cursor.execute(
-                """
-                INSERT INTO LoginAttempts 
-                (username, ip_address, attempt_time, success) 
-                VALUES (?, ?, ?, ?)
-                """,
-                (username, ip_address, now, success)
-            )
-            conn.commit()
-            conn.close()
-            
-            # Check for brute force attacks
-            if ip_address:
-                self._check_for_brute_force(username, ip_address)
-            
-            logger.warning(f"Failed authentication attempt for username '{username}'")
-            return None
+                # Insert admin user
+                self.db.execute_query(
+                    "INSERT INTO users (username, password_hash, salt, full_name, role) VALUES (?, ?, ?, ?, ?)",
+                    (admin_username, password_hash, salt, "Administrator", "admin"),
+                    commit=True
+                )
+                
+                # Create default user
+                user_username = self.config.get_secret("security.default_user_username", "user")
+                user_password = self.config.get_secret("security.default_user_password", "user123")
+                
+                # Hash the password
+                salt = secrets.token_hex(16)  # Generate random salt
+                password_hash = self._hash_password(user_password, salt)
+                
+                # Insert default user
+                self.db.execute_query(
+                    "INSERT INTO users (username, password_hash, salt, full_name, role) VALUES (?, ?, ?, ?, ?)",
+                    (user_username, password_hash, salt, "Default User", "user"),
+                    commit=True
+                )
+                
+                logger.info("Default users created")
+            else:
+                logger.debug("Users already exist in the database")
+                
         except Exception as e:
-            logger.error(f"Error during authentication: {e}")
-            return None
+            logger.error(f"Error creating default users: {e}")
+            raise
     
-    def validate_session(self, session_token):
+    def login(self, username: str, password: str, ip_address: str = None) -> bool:
         """
-        Validate a session token
+        Log in a user
         
         Args:
-            session_token (str): Session token to validate
+            username: Username
+            password: Password
+            ip_address: IP address of the client
             
         Returns:
-            dict: User information if session is valid, None otherwise
+            bool: True if login successful, False otherwise
         """
         try:
-            # Connect to database
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            # Check if account is locked due to too many failed attempts
+            if self._is_account_locked(username):
+                logger.warning(f"Account locked due to too many failed login attempts: {username}")
+                raise AuthenticationError("Account locked due to too many failed login attempts")
             
-            # Get current timestamp
-            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
-            # Get session record
-            cursor.execute(
-                """
-                SELECT s.id, s.user_id, s.expires_at, u.username, u.role, u.full_name, u.email
-                FROM Sessions s
-                JOIN Users u ON s.user_id = u.id
-                WHERE s.token = ? AND s.is_active = 1 AND u.is_active = 1
-                """,
-                (session_token,)
+            # Query user data
+            user_data = self.db.execute_query(
+                "SELECT id, username, password_hash, salt, full_name, email, role, is_active FROM users WHERE username = ?",
+                (username,),
+                fetch_one=True
             )
-            session = cursor.fetchone()
             
-            if not session:
-                logger.warning(f"Invalid session token: {session_token}")
-                conn.close()
-                return None
+            # Check if user exists
+            if not user_data:
+                # Record failed login attempt
+                self._record_login_attempt(username, ip_address, False)
+                logger.warning(f"Login failed: User not found: {username}")
+                raise AuthenticationError("Invalid username or password")
             
-            session_id, user_id, expires_at, username, role, full_name, email = session
+            # Check if user is active
+            if not user_data.get("is_active", 0):
+                logger.warning(f"Login failed: Account disabled: {username}")
+                raise AuthenticationError("Account is disabled")
             
-            # Check if session has expired
-            if expires_at < now:
-                # Deactivate expired session
-                cursor.execute(
-                    "UPDATE Sessions SET is_active = 0 WHERE id = ?",
-                    (session_id,)
-                )
-                conn.commit()
-                conn.close()
-                logger.warning(f"Session expired for user '{username}'")
-                return None
+            # Validate password
+            stored_hash = user_data.get("password_hash", "")
+            salt = user_data.get("salt", "")
             
-            # Valid session, return user info
-            user_info = {
-                'id': user_id,
-                'username': username,
-                'role': role,
-                'full_name': full_name,
-                'email': email
+            if not self._verify_password(password, stored_hash, salt):
+                # Record failed login attempt
+                self._record_login_attempt(username, ip_address, False)
+                logger.warning(f"Login failed: Invalid password for user: {username}")
+                raise AuthenticationError("Invalid username or password")
+            
+            # Authentication successful
+            self.current_user = {
+                "id": user_data.get("id"),
+                "username": user_data.get("username"),
+                "full_name": user_data.get("full_name"),
+                "email": user_data.get("email"),
+                "role": user_data.get("role"),
+                "is_active": bool(user_data.get("is_active"))
             }
             
-            # Store current session
-            self.current_user = user_info
-            self.session_token = session_token
+            # Create a new session
+            self._create_session(user_data.get("id"), ip_address)
             
-            conn.close()
-            return user_info
+            # Record successful login attempt
+            self._record_login_attempt(username, ip_address, True)
+            
+            # Update last login time
+            self.db.execute_query(
+                "UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?",
+                (user_data.get("id"),),
+                commit=True
+            )
+            
+            logger.info(f"User logged in: {username}")
+            return True
+            
+        except AuthenticationError:
+            raise
         except Exception as e:
-            logger.error(f"Error validating session: {e}")
-            return None
+            logger.error(f"Error during login: {e}")
+            raise AuthenticationError(f"Login failed: {str(e)}")
     
     def logout(self):
         """
-        Logout the current user
+        Log out the current user
         
         Returns:
-            bool: True if logout was successful
+            bool: True if logout successful, False otherwise
         """
         try:
-            if not self.session_token:
-                logger.warning("No active session to logout")
+            if not self.is_authenticated():
+                logger.warning("Logout attempt, but no user is authenticated")
                 return False
             
-            # Connect to database
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            # Invalidate session
+            if hasattr(self, 'session_token') and self.session_token:
+                self.db.execute_query(
+                    "UPDATE user_sessions SET is_active = 0 WHERE session_token = ?",
+                    (self.session_token,),
+                    commit=True
+                )
             
-            # Deactivate the session
-            cursor.execute(
-                "UPDATE Sessions SET is_active = 0 WHERE token = ?",
-                (self.session_token,)
-            )
-            
-            conn.commit()
-            conn.close()
-            
-            # Clear current session
+            # Clear user data
+            username = self.current_user.get("username") if self.current_user else "Unknown"
             self.current_user = None
+            self.is_authenticated_flag = False
+            self.session_start_time = None
             self.session_token = None
             
-            logger.info("User logged out successfully")
+            logger.info(f"User logged out: {username}")
             return True
+            
         except Exception as e:
             logger.error(f"Error during logout: {e}")
             return False
     
-    def change_password(self, user_id, current_password, new_password):
+    def is_authenticated(self) -> bool:
+        """
+        Check if a user is currently authenticated
+        
+        Returns:
+            bool: True if a user is authenticated, False otherwise
+        """
+        # Check if session has expired
+        if self.is_authenticated_flag and self.session_start_time:
+            session_timeout = self.config.get_int("security.session_timeout_minutes", 30)
+            elapsed_minutes = (time.time() - self.session_start_time) / 60
+            
+            if elapsed_minutes > session_timeout:
+                logger.info("Session expired, logging out")
+                self.logout()
+                return False
+        
+        return self.is_authenticated_flag
+    
+    def get_current_user(self) -> Dict[str, Any]:
+        """
+        Get the currently authenticated user
+        
+        Returns:
+            Dict containing user information or None if no user is authenticated
+        """
+        if not self.is_authenticated():
+            return {
+                "id": None,
+                "username": "Guest",
+                "full_name": "Guest User",
+                "role": "guest"
+            }
+            
+        return self.current_user
+    
+    def has_permission(self, permission: str) -> bool:
+        """
+        Check if the current user has a specific permission
+        
+        Args:
+            permission: Permission to check
+            
+        Returns:
+            bool: True if the user has the permission, False otherwise
+        """
+        if not self.is_authenticated():
+            return False
+            
+        # Get user role
+        role = self.current_user.get("role", "guest")
+        
+        # Define role-based permissions
+        role_permissions = {
+            "admin": ["view_students", "add_student", "edit_student", "delete_student",
+                     "view_attendance", "mark_attendance", "edit_attendance", "delete_attendance",
+                     "export_data", "import_data", "view_analytics", "manage_subjects",
+                     "system_settings", "manage_users", "view_logs"],
+            "teacher": ["view_students", "add_student", 
+                       "view_attendance", "mark_attendance", "edit_attendance",
+                       "export_data", "view_analytics", "manage_subjects"],
+            "user": ["view_students", "view_attendance", "mark_attendance", "view_analytics"],
+            "guest": ["view_login"]
+        }
+        
+        # Get permissions for the user's role
+        allowed_permissions = role_permissions.get(role, [])
+        
+        # Check if the permission is allowed for the role
+        return permission in allowed_permissions
+    
+    def _hash_password(self, password: str, salt: str) -> str:
+        """
+        Hash a password with salt
+        
+        Args:
+            password: Plain text password
+            salt: Salt value
+            
+        Returns:
+            str: Hashed password
+        """
+        # Combine password and salt
+        salted = password + salt
+        
+        # Hash password using SHA-256
+        return hashlib.sha256(salted.encode()).hexdigest()
+    
+    def _verify_password(self, password: str, stored_hash: str, salt: str) -> bool:
+        """
+        Verify a password against a stored hash
+        
+        Args:
+            password: Plain text password
+            stored_hash: Stored hash
+            salt: Salt value
+            
+        Returns:
+            bool: True if password is valid, False otherwise
+        """
+        # Hash the provided password with the same salt
+        hashed = self._hash_password(password, salt)
+        
+        # Compare hashes
+        return hashed == stored_hash
+    
+    def _create_session(self, user_id: int, ip_address: str = None):
+        """
+        Create a new session for a user
+        
+        Args:
+            user_id: User ID
+            ip_address: IP address of the client
+        """
+        # Generate session token
+        self.session_token = secrets.token_hex(32)
+        
+        # Set session start time
+        self.session_start_time = time.time()
+        
+        # Set authenticated flag
+        self.is_authenticated_flag = True
+        
+        # Get session expiry from config
+        expiry_days = self.config.get_int("security.jwt_expiry_days", 7)
+        expires_at = datetime.datetime.now() + datetime.timedelta(days=expiry_days)
+        
+        # Store session in database
+        self.db.execute_query(
+            "INSERT INTO user_sessions (user_id, session_token, expires_at, ip_address) VALUES (?, ?, ?, ?)",
+            (user_id, self.session_token, expires_at.isoformat(), ip_address),
+            commit=True
+        )
+    
+    def _is_account_locked(self, username: str) -> bool:
+        """
+        Check if an account is locked due to too many failed login attempts
+        
+        Args:
+            username: Username to check
+            
+        Returns:
+            bool: True if account is locked, False otherwise
+        """
+        try:
+            # Get max login attempts from config
+            max_attempts = self.config.get_int("security.max_login_attempts", 5)
+            
+            # Calculate the timeframe for failed attempts (last 30 minutes)
+            timeframe_minutes = 30
+            cutoff_time = datetime.datetime.now() - datetime.timedelta(minutes=timeframe_minutes)
+            
+            # Count failed login attempts
+            result = self.db.execute_query(
+                """
+                SELECT COUNT(*) FROM login_attempts 
+                WHERE username = ? AND success = 0 AND attempted_at > ?
+                """,
+                (username, cutoff_time.isoformat()),
+                fetch_one=True
+            )
+            
+            return result and result.get('COUNT(*)', 0) >= max_attempts
+            
+        except Exception as e:
+            logger.error(f"Error checking account lock status: {e}")
+            return False
+    
+    def _record_login_attempt(self, username: str, ip_address: str, success: bool):
+        """
+        Record a login attempt
+        
+        Args:
+            username: Username
+            ip_address: IP address of the client
+            success: Whether the login attempt was successful
+        """
+        try:
+            self.db.execute_query(
+                "INSERT INTO login_attempts (username, ip_address, success) VALUES (?, ?, ?)",
+                (username, ip_address, 1 if success else 0),
+                commit=True
+            )
+        except Exception as e:
+            logger.error(f"Error recording login attempt: {e}")
+    
+    def change_password(self, user_id: int, current_password: str, new_password: str) -> bool:
         """
         Change a user's password
         
         Args:
-            user_id (int): User ID
-            current_password (str): Current password
-            new_password (str): New password
+            user_id: User ID
+            current_password: Current password
+            new_password: New password
             
         Returns:
-            bool: True if password was changed successfully
+            bool: True if password changed successfully, False otherwise
         """
         try:
-            # Connect to database
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Get user record
-            cursor.execute(
-                "SELECT password_hash, salt FROM Users WHERE id = ? AND is_active = 1",
-                (user_id,)
+            # Get user data
+            user_data = self.db.execute_query(
+                "SELECT password_hash, salt FROM users WHERE id = ?",
+                (user_id,),
+                fetch_one=True
             )
-            user_record = cursor.fetchone()
             
-            if not user_record:
-                logger.warning(f"User ID {user_id} not found or inactive")
-                conn.close()
-                return False
-            
-            db_password_hash, salt = user_record
+            if not user_data:
+                logger.warning(f"Password change failed: User not found: {user_id}")
+                raise AuthenticationError("User not found")
             
             # Verify current password
-            current_hash = self._hash_password(current_password, salt)
-            if current_hash != db_password_hash:
-                logger.warning(f"Current password verification failed for user ID {user_id}")
-                conn.close()
-                return False
+            stored_hash = user_data.get("password_hash", "")
+            salt = user_data.get("salt", "")
             
-            # Generate new salt and hash for the new password
-            new_salt = self._generate_salt()
+            if not self._verify_password(current_password, stored_hash, salt):
+                logger.warning(f"Password change failed: Invalid current password for user: {user_id}")
+                raise AuthenticationError("Invalid current password")
+            
+            # Generate new salt and hash new password
+            new_salt = secrets.token_hex(16)
             new_hash = self._hash_password(new_password, new_salt)
             
-            # Update password
-            cursor.execute(
-                "UPDATE Users SET password_hash = ?, salt = ? WHERE id = ?",
-                (new_hash, new_salt, user_id)
+            # Update user password
+            self.db.execute_query(
+                "UPDATE users SET password_hash = ?, salt = ? WHERE id = ?",
+                (new_hash, new_salt, user_id),
+                commit=True
             )
             
-            # Invalidate all existing sessions for this user
-            cursor.execute(
-                "UPDATE Sessions SET is_active = 0 WHERE user_id = ?",
-                (user_id,)
-            )
-            
-            conn.commit()
-            conn.close()
-            
-            # Clear current session if it's for this user
-            if self.current_user and self.current_user['id'] == user_id:
-                self.current_user = None
-                self.session_token = None
-            
-            logger.info(f"Password changed successfully for user ID {user_id}")
+            logger.info(f"Password changed for user: {user_id}")
             return True
+            
+        except AuthenticationError:
+            raise
         except Exception as e:
             logger.error(f"Error changing password: {e}")
-            return False
+            raise AuthenticationError(f"Password change failed: {str(e)}")
     
-    def reset_password(self, username=None, user_id=None):
+    def create_user(self, username: str, password: str, full_name: str, email: str = None, 
+                   role: str = "user", created_by: str = None) -> Dict[str, Any]:
         """
-        Reset a user's password to a random string
+        Create a new user
         
         Args:
-            username (str, optional): Username
-            user_id (int, optional): User ID
+            username: Username
+            password: Password
+            full_name: Full name
+            email: Email address
+            role: Role (admin, teacher, user)
+            created_by: Username of the creator
             
         Returns:
-            str: New password if reset was successful, None otherwise
+            Dict containing user information
         """
         try:
-            if not username and not user_id:
-                logger.error("Username or user_id must be provided")
-                return None
-            
-            # Connect to database
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Get user record
-            if username:
-                cursor.execute(
-                    "SELECT id FROM Users WHERE username = ? AND is_active = 1",
-                    (username,)
-                )
-            else:
-                cursor.execute(
-                    "SELECT id FROM Users WHERE id = ? AND is_active = 1",
-                    (user_id,)
-                )
-            
-            user_record = cursor.fetchone()
-            
-            if not user_record:
-                logger.warning(f"User not found or inactive")
-                conn.close()
-                return None
-            
-            user_id = user_record[0]
-            
-            # Generate new random password
-            new_password = self._generate_random_password()
-            
-            # Generate new salt and hash
-            new_salt = self._generate_salt()
-            new_hash = self._hash_password(new_password, new_salt)
-            
-            # Update password
-            cursor.execute(
-                "UPDATE Users SET password_hash = ?, salt = ? WHERE id = ?",
-                (new_hash, new_salt, user_id)
+            # Check if username already exists
+            exists = self.db.execute_query(
+                "SELECT COUNT(*) FROM users WHERE username = ?",
+                (username,),
+                fetch_one=True
             )
             
-            # Invalidate all existing sessions for this user
-            cursor.execute(
-                "UPDATE Sessions SET is_active = 0 WHERE user_id = ?",
-                (user_id,)
-            )
+            if exists and exists.get('COUNT(*)', 0) > 0:
+                logger.warning(f"User creation failed: Username already exists: {username}")
+                raise AuthenticationError("Username already exists")
             
-            conn.commit()
-            conn.close()
+            # Generate salt and hash password
+            salt = secrets.token_hex(16)
+            password_hash = self._hash_password(password, salt)
             
-            # Clear current session if it's for this user
-            if self.current_user and self.current_user['id'] == user_id:
-                self.current_user = None
-                self.session_token = None
-            
-            logger.info(f"Password reset successfully for user ID {user_id}")
-            return new_password
-        except Exception as e:
-            logger.error(f"Error resetting password: {e}")
-            return None
-    
-    def update_user(self, user_id, role=None, full_name=None, email=None, is_active=None):
-        """
-        Update user information
-        
-        Args:
-            user_id (int): User ID
-            role (str, optional): New role
-            full_name (str, optional): New full name
-            email (str, optional): New email
-            is_active (bool, optional): New active status
-            
-        Returns:
-            bool: True if user was updated successfully
-        """
-        try:
-            # Connect to database
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Build update query
-            query_parts = []
-            params = []
-            
-            if role is not None:
-                query_parts.append("role = ?")
-                params.append(role)
-            
-            if full_name is not None:
-                query_parts.append("full_name = ?")
-                params.append(full_name)
-            
-            if email is not None:
-                query_parts.append("email = ?")
-                params.append(email)
-            
-            if is_active is not None:
-                query_parts.append("is_active = ?")
-                params.append(1 if is_active else 0)
-            
-            if not query_parts:
-                logger.warning("No fields provided for update")
-                conn.close()
-                return False
-            
-            # Add user_id to params
-            params.append(user_id)
-            
-            # Execute update
-            cursor.execute(
-                f"UPDATE Users SET {', '.join(query_parts)} WHERE id = ?",
-                params
-            )
-            
-            # Check if any row was affected
-            if cursor.rowcount == 0:
-                logger.warning(f"User ID {user_id} not found")
-                conn.close()
-                return False
-            
-            conn.commit()
-            conn.close()
-            
-            logger.info(f"User ID {user_id} updated successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Error updating user: {e}")
-            return False
-    
-    def get_users(self, active_only=True):
-        """
-        Get list of users
-        
-        Args:
-            active_only (bool, optional): Only return active users
-            
-        Returns:
-            list: List of user dictionaries
-        """
-        try:
-            # Connect to database
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row  # Return rows as dictionaries
-            cursor = conn.cursor()
-            
-            # Build query
-            query = """
-            SELECT id, username, role, full_name, email, created_date, last_login, is_active
-            FROM Users
-            """
-            
-            if active_only:
-                query += " WHERE is_active = 1"
-            
-            cursor.execute(query)
-            rows = cursor.fetchall()
-            
-            # Convert to list of dictionaries
-            users = [dict(row) for row in rows]
-            
-            conn.close()
-            return users
-        except Exception as e:
-            logger.error(f"Error getting users: {e}")
-            return []
-    
-    def delete_user(self, user_id):
-        """
-        Delete a user (soft delete by setting is_active to 0)
-        
-        Args:
-            user_id (int): User ID
-            
-        Returns:
-            bool: True if user was deleted successfully
-        """
-        try:
-            # Connect to database
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Soft delete by setting is_active to 0
-            cursor.execute(
-                "UPDATE Users SET is_active = 0 WHERE id = ?",
-                (user_id,)
-            )
-            
-            # Check if any row was affected
-            if cursor.rowcount == 0:
-                logger.warning(f"User ID {user_id} not found")
-                conn.close()
-                return False
-            
-            # Invalidate all sessions for this user
-            cursor.execute(
-                "UPDATE Sessions SET is_active = 0 WHERE user_id = ?",
-                (user_id,)
-            )
-            
-            conn.commit()
-            conn.close()
-            
-            # Clear current session if it's for this user
-            if self.current_user and self.current_user['id'] == user_id:
-                self.current_user = None
-                self.session_token = None
-            
-            logger.info(f"User ID {user_id} deleted successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Error deleting user: {e}")
-            return False
-    
-    def _hash_password(self, password, salt):
-        """Hash a password with the given salt"""
-        return hashlib.sha256((password + salt).encode()).hexdigest()
-    
-    def _generate_salt(self, length=16):
-        """Generate a random salt for password hashing"""
-        return ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(length))
-    
-    def _generate_session_token(self, length=32):
-        """Generate a random session token"""
-        return ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(length))
-    
-    def _generate_random_password(self, length=12):
-        """Generate a random password"""
-        chars = string.ascii_letters + string.digits + "!@#$%^&*"
-        return ''.join(secrets.choice(chars) for _ in range(length))
-    
-    def _check_for_brute_force(self, username, ip_address):
-        """Check for potential brute force attacks"""
-        try:
-            # Connect to database
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Check recent failed attempts for this username/IP
-            one_hour_ago = (datetime.datetime.now() - datetime.timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
-            
-            # Count failed attempts by username
-            cursor.execute(
+            # Insert user
+            user_id = self.db.execute_query(
                 """
-                SELECT COUNT(*) FROM LoginAttempts 
-                WHERE username = ? AND success = 0 AND attempt_time > ?
+                INSERT INTO users 
+                (username, password_hash, salt, full_name, email, role) 
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (username, one_hour_ago)
+                (username, password_hash, salt, full_name, email, role),
+                commit=True
             )
-            username_attempts = cursor.fetchone()[0]
             
-            # Count failed attempts by IP
-            cursor.execute(
+            # Log action
+            self.db.log_audit(
+                action="create_user",
+                entity="user",
+                entity_id=username,
+                user=created_by,
+                details=f"Created user {username} with role {role}"
+            )
+            
+            logger.info(f"User created: {username} with role {role}")
+            
+            return {
+                "id": user_id,
+                "username": username,
+                "full_name": full_name,
+                "email": email,
+                "role": role,
+                "is_active": True
+            }
+            
+        except AuthenticationError:
+            raise
+        except Exception as e:
+            logger.error(f"Error creating user: {e}")
+            raise AuthenticationError(f"User creation failed: {str(e)}")
+    
+    def get_user(self, user_id: int) -> Dict[str, Any]:
+        """
+        Get user information
+        
+        Args:
+            user_id: User ID
+            
+        Returns:
+            Dict containing user information
+        """
+        try:
+            user_data = self.db.execute_query(
                 """
-                SELECT COUNT(*) FROM LoginAttempts 
-                WHERE ip_address = ? AND success = 0 AND attempt_time > ?
+                SELECT id, username, full_name, email, role, last_login, created_at, is_active 
+                FROM users WHERE id = ?
                 """,
-                (ip_address, one_hour_ago)
+                (user_id,),
+                fetch_one=True
             )
-            ip_attempts = cursor.fetchone()[0]
             
-            conn.close()
-            
-            # Log potential brute force attacks
-            if username_attempts >= 5:
-                logger.warning(f"Potential brute force attack detected for username '{username}': {username_attempts} failed attempts in the last hour")
-            
-            if ip_attempts >= 10:
-                logger.warning(f"Potential brute force attack detected from IP '{ip_address}': {ip_attempts} failed attempts in the last hour")
+            if not user_data:
+                logger.warning(f"Get user failed: User not found: {user_id}")
+                raise AuthenticationError("User not found")
                 
+            return {
+                "id": user_data.get("id"),
+                "username": user_data.get("username"),
+                "full_name": user_data.get("full_name"),
+                "email": user_data.get("email"),
+                "role": user_data.get("role"),
+                "last_login": user_data.get("last_login"),
+                "created_at": user_data.get("created_at"),
+                "is_active": bool(user_data.get("is_active"))
+            }
+            
+        except AuthenticationError:
+            raise
         except Exception as e:
-            logger.error(f"Error checking for brute force attacks: {e}")
+            logger.error(f"Error getting user: {e}")
+            raise AuthenticationError(f"Failed to get user: {str(e)}")
     
-    def get_current_user(self):
+    def login_as_default_user(self) -> bool:
         """
-        Get the current authenticated user
+        Log in as the default user for non-authentication mode
         
         Returns:
-            dict: Current user information, or None if no user is authenticated
+            bool: True if login successful, False otherwise
         """
-        return self.current_user
+        try:
+            # Get default user
+            user_data = self.db.execute_query(
+                """
+                SELECT id, username, full_name, email, role, is_active 
+                FROM users WHERE role = 'user' LIMIT 1
+                """,
+                fetch_one=True
+            )
+            
+            if not user_data:
+                logger.warning("Auto-login failed: No default user found")
+                return False
+            
+            # Set user data
+            self.current_user = {
+                "id": user_data.get("id"),
+                "username": user_data.get("username"),
+                "full_name": user_data.get("full_name") or "Default User",
+                "email": user_data.get("email"),
+                "role": user_data.get("role"),
+                "is_active": bool(user_data.get("is_active"))
+            }
+            
+            # Create a new session
+            self._create_session(user_data.get("id"), "127.0.0.1")
+            
+            # Update last login time
+            self.db.execute_query(
+                "UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?",
+                (user_data.get("id"),),
+                commit=True
+            )
+            
+            logger.info(f"Auto-login as default user: {user_data.get('username')}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error auto-logging in as default user: {e}")
+            return False

@@ -394,3 +394,134 @@ class FaceDetector:
         except Exception as e:
             logger.error(f"Error identifying face: {e}")
             return "Unknown", 0.0
+
+    def recognize_face(self, frame, subject=None):
+        """
+        Recognize a face in the frame and return identity and confidence
+        
+        Args:
+            frame (numpy.ndarray): Input image
+            subject (str): Optional subject name for context
+            
+        Returns:
+            dict: Recognition result with keys:
+                - success: bool indicating if recognition was successful
+                - name: recognized person's name
+                - student_id: student ID if available
+                - confidence: confidence score (0-1)
+                - face_location: tuple of (top, right, bottom, left)
+                - subject: the subject name (passed through)
+        """
+        try:
+            # Detect faces in the frame
+            face_locations = self.detect_faces(frame)
+            
+            if not face_locations:
+                return {
+                    'success': False,
+                    'name': 'Unknown',
+                    'student_id': 'unknown',
+                    'confidence': 0.0,
+                    'face_location': None,
+                    'subject': subject
+                }
+            
+            # For simplicity, just use the first detected face
+            face_location = face_locations[0]
+            
+            # Process the image for recognition
+            if self.scale_factor != 1.0:
+                small_frame = cv2.resize(frame, (0, 0), fx=self.scale_factor, fy=self.scale_factor)
+            else:
+                small_frame = frame.copy()
+                
+            # Convert to RGB (face_recognition uses RGB)
+            rgb_frame = small_frame[:, :, ::-1]
+            
+            # Calculate face location in the small frame
+            if self.scale_factor != 1.0:
+                small_face_location = (
+                    int(face_location[0] * self.scale_factor),
+                    int(face_location[1] * self.scale_factor),
+                    int(face_location[2] * self.scale_factor),
+                    int(face_location[3] * self.scale_factor)
+                )
+            else:
+                small_face_location = face_location
+            
+            # Get face encoding
+            face_encodings = face_recognition.face_encodings(rgb_frame, [small_face_location])
+            
+            if not face_encodings:
+                return {
+                    'success': False,
+                    'name': 'Unknown',
+                    'student_id': 'unknown',
+                    'confidence': 0.0,
+                    'face_location': face_location,
+                    'subject': subject
+                }
+                
+            face_encoding = face_encodings[0]
+            
+            # If we don't have any known faces, return unknown
+            if not self.known_face_encodings:
+                return {
+                    'success': False,
+                    'name': 'Unknown',
+                    'student_id': 'unknown',
+                    'confidence': 0.0,
+                    'face_location': face_location,
+                    'subject': subject
+                }
+            
+            # Compare with known faces
+            with self.encoding_lock:  # Thread safety for face recognition
+                face_distances = face_recognition.face_distance(self.known_face_encodings, face_encoding)
+            
+            # Get best match
+            best_match_index = np.argmin(face_distances)
+            min_distance = face_distances[best_match_index]
+            
+            # Convert distance to confidence score (0-1, higher is better)
+            confidence = 1.0 - min(1.0, min_distance)
+            
+            # Threshold for positive identification
+            if confidence >= 0.6:  # Can be adjusted based on requirements
+                name = self.known_face_names[best_match_index]
+                student_id = self.known_face_ids[best_match_index]
+                return {
+                    'success': True,
+                    'name': name,
+                    'student_id': student_id,
+                    'confidence': confidence,
+                    'face_location': face_location,
+                    'subject': subject
+                }
+            else:
+                return {
+                    'success': False,
+                    'name': 'Unknown',
+                    'student_id': 'unknown',
+                    'confidence': confidence,
+                    'face_location': face_location,
+                    'subject': subject
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in recognize_face: {e}")
+            return {
+                'success': False,
+                'name': 'Error',
+                'student_id': 'error',
+                'confidence': 0.0,
+                'face_location': None,
+                'subject': subject,
+                'error': str(e)
+            }
+            
+    def cleanup(self):
+        """Clean up resources used by the face detector"""
+        # Nothing to clean up in this implementation
+        # But we provide this method for compatibility
+        pass

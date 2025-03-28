@@ -1,212 +1,342 @@
 """
-Base View class for UI components in the Face Detection Attendance System
+Base View for the Face Detection Attendance System
+
+This module provides the base view class that all other views inherit from.
 """
 import logging
 import tkinter as tk
-from typing import Any, Dict, Optional, Callable
+from tkinter import messagebox
 import customtkinter as ctk
-
-from ..utils.exceptions import ValidationError
+from typing import Optional, Callable, Dict, Any, Union
 
 class BaseView(ctk.CTkFrame):
     """
-    Base class for all view components
+    Base view class for all views in the application
     
-    Attributes:
-        controller: Associated controller instance
-        logger: Logger instance
+    This class provides common functionality used by all views:
+    - Logging
+    - Message dialogs
+    - Loading overlay
+    - Common layout helpers
+    
+    All views should inherit from this class.
     """
     
-    def __init__(self, master, controller=None, **kwargs):
+    def __init__(
+        self, 
+        master,
+        width: int = 1024,
+        height: int = 768,
+        **kwargs
+    ):
         """
-        Initialize the base view
+        Initialize base view
         
         Args:
             master: Parent widget
-            controller: Associated controller
+            width: View width
+            height: View height
             **kwargs: Additional arguments for CTkFrame
         """
-        super().__init__(master, **kwargs)
+        # Setup logger for this class
+        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         
-        # Initialize logger
-        self.logger = logging.getLogger(self.__class__.__name__)
+        # Initialize frame
+        super().__init__(master, width=width, height=height, **kwargs)
         
-        # Store controller reference
-        self.controller = controller
+        # Store references
+        self.master = master
+        self.width = width
+        self.height = height
         
-        # Store configuration options
-        self.config_options = {}
-        
-        # UI state
-        self.is_loading = False
-        self.loading_frame = None
+        # Loading overlay
+        self._loading_overlay = None
+        self._loading_label = None
+        self._loading_spinner = None
+        self._loading_message = tk.StringVar(value="Loading...")
     
-    def setup_ui(self) -> None:
-        """Set up the UI components - to be implemented by subclasses"""
-        raise NotImplementedError("Subclasses must implement setup_ui()")
-    
-    def update_from_controller(self, data: Dict[str, Any] = None) -> None:
+    def show_info(self, message: str, title: str = "Information"):
         """
-        Update the view with data from the controller
+        Show information message dialog
         
         Args:
-            data: Data from the controller to update the view
+            message: Message to show
+            title: Dialog title
         """
-        pass  # Optional implementation in subclasses
+        # In themed CTk style
+        messagebox.showinfo(title, message)
     
-    def show_loading(self, message: str = "Loading...") -> None:
+    def show_warning(self, message: str, title: str = "Warning"):
+        """
+        Show warning message dialog
+        
+        Args:
+            message: Message to show
+            title: Dialog title
+        """
+        messagebox.showwarning(title, message)
+    
+    def show_error(self, message: str, title: str = "Error"):
+        """
+        Show error message dialog
+        
+        Args:
+            message: Message to show
+            title: Dialog title
+        """
+        messagebox.showerror(title, message)
+    
+    def show_confirmation(
+        self, 
+        message: str, 
+        title: str = "Confirmation", 
+        on_yes: Optional[Callable] = None,
+        on_no: Optional[Callable] = None
+    ):
+        """
+        Show confirmation dialog
+        
+        Args:
+            message: Message to show
+            title: Dialog title
+            on_yes: Callback for Yes button
+            on_no: Callback for No button
+            
+        Returns:
+            True if Yes was clicked, False otherwise
+        """
+        result = messagebox.askyesno(title, message)
+        
+        if result and on_yes:
+            on_yes()
+        elif not result and on_no:
+            on_no()
+            
+        return result
+    
+    def show_input(
+        self, 
+        message: str, 
+        title: str = "Input", 
+        initial_value: str = ""
+    ) -> Optional[str]:
+        """
+        Show input dialog
+        
+        Args:
+            message: Message to show
+            title: Dialog title
+            initial_value: Initial value for input
+            
+        Returns:
+            Input value or None if canceled
+        """
+        return messagebox.askstring(title, message, initialvalue=initial_value)
+    
+    def show_success(self, message: str, title: str = "Success"):
+        """
+        Show success message dialog
+        
+        Args:
+            message: Message to show
+            title: Dialog title
+        """
+        messagebox.showinfo(title, message)
+    
+    def show_loading(self, message: str = "Loading..."):
         """
         Show loading overlay
         
         Args:
-            message: Message to display
+            message: Loading message
         """
-        if self.is_loading or self.loading_frame:
-            return  # Already showing
+        if self._loading_overlay is not None:
+            # Already showing, just update message
+            self._loading_message.set(message)
+            return
             
-        self.is_loading = True
+        # Create overlay
+        self._loading_overlay = ctk.CTkFrame(self, fg_color=("#FFFFFF80", "#00000080"))
+        self._loading_overlay.place(relx=0.5, rely=0.5, anchor="center", relwidth=1, relheight=1)
         
-        # Create loading overlay
-        self.loading_frame = ctk.CTkFrame(self, corner_radius=10)
-        self.loading_frame.place(relx=0.5, rely=0.5, anchor="center")
+        # Create loading container
+        loading_container = ctk.CTkFrame(self._loading_overlay)
+        loading_container.place(relx=0.5, rely=0.5, anchor="center")
         
-        # Loading indicator
-        loading_label = ctk.CTkLabel(
-            self.loading_frame,
-            text=message,
+        # Create loading spinner (placeholder - use actual spinner in real implementation)
+        self._loading_spinner = ctk.CTkLabel(loading_container, text="⟳", font=ctk.CTkFont(size=36))
+        self._loading_spinner.pack(pady=10)
+        
+        # Start spinner animation (just a simple animation for this example)
+        self._animate_spinner()
+        
+        # Create loading label
+        self._loading_message.set(message)
+        self._loading_label = ctk.CTkLabel(
+            loading_container,
+            textvariable=self._loading_message,
             font=ctk.CTkFont(size=16)
         )
-        loading_label.pack(padx=20, pady=20)
+        self._loading_label.pack(pady=10)
         
-        # Update UI
+        # Force update
         self.update_idletasks()
     
-    def hide_loading(self) -> None:
+    def hide_loading(self):
         """Hide loading overlay"""
-        if not self.is_loading or not self.loading_frame:
-            return  # Not showing
+        if self._loading_overlay is not None:
+            self._loading_overlay.destroy()
+            self._loading_overlay = None
+            self._loading_label = None
+            self._loading_spinner = None
+    
+    def _animate_spinner(self):
+        """Animate loading spinner"""
+        if self._loading_spinner is None:
+            return
             
-        self.is_loading = False
+        # Get current text
+        current_text = self._loading_spinner.cget("text")
         
-        # Remove loading overlay
-        if self.loading_frame:
-            self.loading_frame.destroy()
-            self.loading_frame = None
-            
-        # Update UI
-        self.update_idletasks()
+        # Rotate spinner character
+        spinner_chars = "⟳⟲"
+        next_index = (spinner_chars.index(current_text) + 1) % len(spinner_chars)
+        self._loading_spinner.configure(text=spinner_chars[next_index])
+        
+        # Schedule next animation frame
+        self.after(250, self._animate_spinner)
     
-    def show_error(self, message: str) -> None:
+    def refresh(self):
         """
-        Show error message
+        Refresh view data
+        
+        Override in subclasses to refresh data displayed in the view.
+        """
+        pass
+    
+    def on_close(self):
+        """
+        Clean up resources when view is closed
+        
+        Override in subclasses to perform cleanup when view is closed.
+        """
+        # Default implementation - nothing to clean up
+        pass
+
+    def create_scrollable_frame(self, master=None, **kwargs):
+        """
+        Create a scrollable frame
         
         Args:
-            message: Error message to display
-        """
-        from tkinter import messagebox
-        messagebox.showerror("Error", message)
-        self.logger.error(f"UI Error: {message}")
-    
-    def show_info(self, message: str) -> None:
-        """
-        Show information message
-        
-        Args:
-            message: Information message to display
-        """
-        from tkinter import messagebox
-        messagebox.showinfo("Information", message)
-        self.logger.info(f"UI Info: {message}")
-    
-    def show_warning(self, message: str) -> None:
-        """
-        Show warning message
-        
-        Args:
-            message: Warning message to display
-        """
-        from tkinter import messagebox
-        messagebox.showwarning("Warning", message)
-        self.logger.warning(f"UI Warning: {message}")
-    
-    def validate_text_input(self, value: str, required: bool = True, 
-                           min_length: int = 0, max_length: int = None) -> bool:
-        """
-        Validate text input
-        
-        Args:
-            value: Text value to validate
-            required: Whether the field is required
-            min_length: Minimum length
-            max_length: Maximum length
+            master: Parent widget (default: self)
+            **kwargs: Additional arguments for CTkScrollableFrame
             
         Returns:
-            bool: True if valid, False otherwise
-            
-        Raises:
-            ValidationError: If validation fails
+            Scrollable frame widget
         """
-        if required and not value:
-            raise ValidationError("This field is required")
+        if master is None:
+            master = self
             
-        if value and min_length > 0 and len(value) < min_length:
-            raise ValidationError(f"Must be at least {min_length} characters")
-            
-        if value and max_length and len(value) > max_length:
-            raise ValidationError(f"Cannot be more than {max_length} characters")
-            
-        return True
+        return ctk.CTkScrollableFrame(master, **kwargs)
     
-    def validate_numeric_input(self, value: str, required: bool = True,
-                              min_value: float = None, max_value: float = None,
-                              integer_only: bool = False) -> bool:
+    def create_section_header(self, parent, text, **kwargs):
         """
-        Validate numeric input
+        Create a section header
         
         Args:
-            value: Numeric value to validate
-            required: Whether the field is required
-            min_value: Minimum value
-            max_value: Maximum value
-            integer_only: Whether only integers are allowed
+            parent: Parent widget
+            text: Header text
+            **kwargs: Additional arguments for CTkLabel
             
         Returns:
-            bool: True if valid, False otherwise
-            
-        Raises:
-            ValidationError: If validation fails
+            Header label widget
         """
-        if required and not value:
-            raise ValidationError("This field is required")
+        default_kwargs = {
+            "font": ctk.CTkFont(size=16, weight="bold"),
+            "anchor": "w"
+        }
+        default_kwargs.update(kwargs)
+        
+        label = ctk.CTkLabel(parent, text=text, **default_kwargs)
+        return label
+        
+    def create_form_field(
+        self, 
+        parent, 
+        label_text: str, 
+        field_type: str = "entry",
+        variable: Optional[Union[tk.StringVar, tk.BooleanVar, tk.IntVar]] = None,
+        options: Optional[list] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Create a labeled form field
+        
+        Args:
+            parent: Parent widget
+            label_text: Label text
+            field_type: Field type (entry, dropdown, checkbox, etc.)
+            variable: Variable to bind to the field
+            options: Options for dropdown fields
+            **kwargs: Additional arguments for the field widget
             
-        if not value:
-            return True
+        Returns:
+            Dictionary containing the frame, label, and field widgets
+        """
+        # Create container frame
+        frame = ctk.CTkFrame(parent, fg_color="transparent")
+        
+        # Create label
+        label = ctk.CTkLabel(
+            frame, 
+            text=label_text,
+            font=ctk.CTkFont(size=14),
+            anchor="w"
+        )
+        label.pack(anchor="w", pady=(0, 5))
+        
+        # Create field based on type
+        field = None
+        
+        if field_type == "entry":
+            field = ctk.CTkEntry(frame, **kwargs)
+            if variable:
+                field.configure(textvariable=variable)
+                
+        elif field_type == "dropdown":
+            field = ctk.CTkOptionMenu(
+                frame, 
+                values=options or [],
+                **kwargs
+            )
+            if variable:
+                field.configure(variable=variable)
+                
+        elif field_type == "checkbox":
+            field = ctk.CTkCheckBox(
+                frame,
+                text="",
+                **kwargs
+            )
+            if variable:
+                field.configure(variable=variable)
+                
+        elif field_type == "text":
+            field = ctk.CTkTextbox(frame, **kwargs)
+            # Text widgets don't use variables directly
             
-        try:
-            if integer_only:
-                # Try to convert to integer
-                num_value = int(value)
-                
-                # Check if it's really an integer (no decimal part)
-                if float(value) != num_value:
-                    raise ValidationError("Must be an integer value")
-            else:
-                # Just convert to float
-                num_value = float(value)
-                
-            # Check range
-            if min_value is not None and num_value < min_value:
-                raise ValidationError(f"Must be at least {min_value}")
-                
-            if max_value is not None and num_value > max_value:
-                raise ValidationError(f"Cannot be more than {max_value}")
-                
-            return True
-                
-        except ValueError:
-            raise ValidationError("Must be a valid number")
-    
-    def on_close(self) -> None:
-        """Handle view closing - cleanup resources"""
-        # Clean up resources when view is closed
-        self.logger.info(f"Closing {self.__class__.__name__}")
+        else:
+            # Default to entry
+            field = ctk.CTkEntry(frame, **kwargs)
+            if variable:
+                field.configure(textvariable=variable)
+        
+        # Pack the field
+        field.pack(fill="x", expand=True)
+        
+        # Return all widgets
+        return {
+            "frame": frame,
+            "label": label,
+            "field": field
+        }

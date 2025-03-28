@@ -114,4 +114,59 @@ def draw_rectangle(image, rect, color=(0, 255, 0), thickness=2):
         numpy.ndarray: Image with rectangle
     """
     x, y, w, h = rect
-    return cv2.rectangle(image.copy(), (x, y), (x + w, y + h), color, thickness) 
+    return cv2.rectangle(image.copy(), (x, y), (x + w, y + h), color, thickness)
+
+
+def validate_image(image_path):
+    """
+    Validate if an image file is valid and can be processed
+    
+    Args:
+        image_path (str): Path to the image file
+        
+    Returns:
+        bool: True if the image is valid, False otherwise
+    """
+    if not os.path.exists(image_path):
+        return False
+        
+    try:
+        img = Image.open(image_path)
+        img.verify()  # Verify that it is a valid image
+        
+        # Check if OpenCV can read it too
+        cv_img = cv2.imread(image_path)
+        if cv_img is None or cv_img.size == 0:
+            return False
+            
+        return True
+    except Exception:
+        return False
+
+
+def optimize_image(image_path, quality=85, max_size=(800, 800)):
+    """
+    Optimize an image by reducing quality and/or resizing
+    
+    Args:
+        image_path (str): Path to the image file
+        quality (int): JPEG quality (0-100)
+        max_size (tuple): Maximum width and height
+        
+    Returns:
+        str: Path to the optimized image, same as input if optimization failed
+    """
+    try:
+        img = Image.open(image_path)
+        
+        # Resize if needed
+        if img.width > max_size[0] or img.height > max_size[1]:
+            img.thumbnail(max_size, Image.Resampling.LANCZOS)
+        
+        # Save with optimization
+        img.save(image_path, optimize=True, quality=quality)
+        
+        return image_path
+    except Exception as e:
+        print(f"Error optimizing image: {e}")
+        return image_path

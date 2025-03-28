@@ -1,335 +1,259 @@
 """
-Application configuration management with secure environment variable handling
+Application Configuration for Face Detection Attendance System
+
+This module provides a centralized way to manage application configuration
+settings from different sources (JSON file, environment variables, etc.)
 """
 import os
 import json
 import logging
-import datetime
+import threading
 from pathlib import Path
-from typing import Any, Dict, Optional, List, Union
+from typing import Dict, Any, Optional, Union, List, TypeVar, cast
+from dataclasses import dataclass, field
+import dotenv
+import datetime
 
-from .env_manager import env_manager
-from .exceptions import ConfigurationError
+from .exceptions import ConfigError
+
+# Load environment variables from .env file
+dotenv.load_dotenv()
+
+# Type variable for generic type hinting
+T = TypeVar('T')
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
+@dataclass
 class AppConfig:
     """
-    Application configuration manager
-    
-    Manages application configuration with support for environment variables,
-    config files, and in-memory settings with proper security handling.
+    Application Configuration class for managing settings
     
     Attributes:
         config_path: Path to the configuration file
-        config: The loaded configuration
+        _config: Dictionary of configuration settings
+        _initialized: Whether the configuration has been initialized
     """
     
-    def __init__(self, config_path: str = "config/config.json"):
-        """
-        Initialize app configuration
-        
-        Args:
-            config_path: Path to the configuration file
-        """
-        self.config_path = config_path
-        self.config = {}
-        self.env_prefix = "FACE_ATTENDANCE_"
-        
-        # Load configuration
-        self.load_config()
+    # Class-level variable for singleton pattern
+    _instance = None
+    _lock = threading.Lock()
     
-    def load_config(self) -> Dict[str, Any]:
-        """
-        Load configuration from file with environment variable overrides
+    # Default configuration path
+    config_path: str = field(default=None)
+    
+    # Dictionary for configuration settings
+    _config: Dict[str, Any] = field(default_factory=dict)
+    
+    # Flag for initialized state
+    _initialized: bool = field(default=False)
+    
+    # Secret keys that shouldn't be logged
+    _secret_keys: List[str] = field(default_factory=list)
+    
+    def __new__(cls, config_path: Optional[str] = None):
+        """Implement singleton pattern"""
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super(AppConfig, cls).__new__(cls)
+                cls._instance._init(config_path)
+            elif config_path is not None and cls._instance.config_path != config_path:
+                # If a different config path is specified, reload with the new path
+                cls._instance._init(config_path)
+            return cls._instance
+    
+    def _init(self, config_path: Optional[str] = None):
+        """Initialize configuration settings"""
+        if self._initialized and config_path is None:
+            return
+            
+        # Set config path
+        if config_path is not None:
+            self.config_path = config_path
+        elif self.config_path is None:
+            # Use default path based on project root
+            self.config_path = os.path.join(self._get_project_root(), "config", "config.json")
+            
+        # Initialize secret keys list
+        self._secret_keys = [
+            "database.password", 
+            "email.password",
+            "aws_secret_key",
+            "api_key",
+            "jwt_secret",
+            "credentials"
+        ]
+            
+        # Load configuration
+        self._load_config()
         
-        Returns:
-            The loaded configuration
-        """
+        # Load environment variables
+        self._load_env_variables()
+        
+        # Mark as initialized
+        self._initialized = True
+        
+        logger.info(f"AppConfig initialized with config file: {self.config_path}")
+    
+    def _get_project_root(self) -> str:
+        """Get the project root directory"""
+        # Start with the location of this file and go up until finding the project root
+        current_path = Path(__file__).resolve().parent
+        
+        # Go up the directory tree until we find the project root (where main.py is located)
+        while not (current_path / "main.py").exists() and current_path != current_path.parent:
+            current_path = current_path.parent
+            
+        if not (current_path / "main.py").exists():
+            # Fallback to the current working directory
+            return os.getcwd()
+            
+        return str(current_path)
+    
+    def _load_config(self):
+        """Load configuration from file"""
         try:
-            # Start with default configuration
-            self.config = self._get_default_config()
-            
-            # Load from file if exists
-            config_file = Path(self.config_path)
-            if config_file.exists():
-                with open(config_file, 'r') as file:
-                    file_config = json.load(file)
-                    self._merge_config(self.config, file_config)
-                    logger.info(f"Loaded configuration from {self.config_path}")
-                    
-            # Override with environment variables
-            self._load_env_overrides()
-            
-            return self.config
-            
+            # Create default configuration if it doesn't exist
+            if not os.path.exists(self.config_path):
+                self._create_default_config()
+                
+            # Load configuration from file
+            with open(self.config_path, 'r') as f:
+                self._config = json.load(f)
+                
+            logger.info(f"Configuration loaded from {self.config_path}")
         except Exception as e:
             logger.error(f"Error loading configuration: {e}")
-            # Return defaults if loading fails
-            return self._get_default_config()
+            
+            # Use default configuration if loading fails
+            self._create_default_config(use_as_fallback=True)
     
-    def _get_default_config(self) -> Dict[str, Any]:
+    def _create_default_config(self, use_as_fallback: bool = False):
         """
-        Get default configuration
+        Create default configuration file
         
-        Returns:
-            Default configuration
+        Args:
+            use_as_fallback: Whether to use the default configuration as a fallback
+                            without writing to file
         """
-        return {
-            "app": {
-                "name": "Face Detection Attendance System",
-                "version": "2.0.0"
-            },
-            "ui": {
-                "theme": "system",  # "system", "light", "dark"
-                "color_theme": "blue",
-                "window_width": 1280,
-                "window_height": 720,
-                "fullscreen": False,
-                "scaling_factor": 1.0
-            },
+        # Define default configuration
+        default_config = {
+            "app_name": "Face Detection Attendance System",
+            "version": "1.0.0",
+            "environment": "development",
+            "log_level": "INFO",
             "database": {
                 "path": "Data/attendance.db",
-                "backup_dir": "backups/data_backup",
                 "pool_size": 5,
-                "optimize_interval": 24  # hours
+                "backup_dir": "backups/data_backup"
             },
             "camera": {
                 "id": 0,
                 "resolution": [640, 480],
                 "fps": 30,
-                "flip_image": False,
-                "face_detection_interval": 0.5  # seconds
+                "flip_image": False
             },
-            "face_recognition": {
-                "model": "default",
-                "confidence_threshold": 0.65,
-                "training_images_dir": "TrainingImage",
-                "recognition_algorithm": "LBPH",  # "LBPH", "Eigenfaces", "Fisherfaces"
-                "batch_processing": True,
-                "use_gpu": False
+            "face_detection": {
+                "confidence_threshold": 65,
+                "recognition_buffer_size": 5,
+                "min_recognized_frames": 3,
+                "show_recognition_confidence": True,
+                "show_bounding_box": True,
+                "late_threshold_seconds": 300
+            },
+            "training": {
+                "images_directory": "TrainingImage",
+                "labels_directory": "TrainingImageLabel",
+                "samples_per_person": 20,
+                "augment_data": True,
+                "model_type": "standard"
             },
             "attendance": {
-                "session_timeout": 30,  # minutes
-                "same_person_cooldown": 120,  # seconds
-                "backup_dir": "backups/attendance_backup",
-                "backup_interval": 24  # hours
+                "directory": "Attendance",
+                "backup_directory": "backups/attendance_backup",
+                "default_subject": "Python",
+                "auto_export": False,
+                "export_format": "csv",
+                "duplicate_action": "update"
+            },
+            "ui": {
+                "theme": "system",
+                "font_family": "Helvetica",
+                "title_font_size": 16,
+                "normal_font_size": 12,
+                "window_width": 1280,
+                "window_height": 720,
+                "fullscreen": False,
+                "show_status_bar": True,
+                "show_toolbar": True,
+                "confirm_exit": True
             },
             "security": {
-                "password_min_length": 8,
-                "require_special_chars": True,
-                "session_timeout": 30,  # minutes
+                "require_login": False,
+                "session_timeout_minutes": 30,
                 "max_login_attempts": 5,
-                "use_encryption": True
-            },
-            "logging": {
-                "level": "INFO",
-                "file": "logs/app.log",
-                "max_size": 10485760,  # 10 MB
-                "backup_count": 5
-            },
-            "memory": {
-                "auto_gc": True,
-                "gc_interval": 60  # seconds
+                "jwt_expiry_days": 7
             }
         }
-    
-    def _merge_config(self, base: Dict[str, Any], override: Dict[str, Any]) -> None:
-        """
-        Merge configuration dictionaries
         
-        Args:
-            base: Base configuration
-            override: Override configuration
-        """
-        for key, value in override.items():
-            if key in base and isinstance(base[key], dict) and isinstance(value, dict):
-                self._merge_config(base[key], value)
-            else:
-                base[key] = value
-    
-    def _load_env_overrides(self) -> None:
-        """
-        Load configuration overrides from environment variables
-        
-        Environment variables should be prefixed with FACE_ATTENDANCE_
-        and use double underscore as separator for nested keys:
-        FACE_ATTENDANCE_UI__THEME=dark
-        """
-        # Get all environment variables with the prefix
-        for key, value in os.environ.items():
-            if key.startswith(self.env_prefix):
-                # Remove prefix
-                key = key[len(self.env_prefix):]
-                
-                # Handle nested keys (separated by double underscore)
-                parts = key.split('__')
-                
-                # Convert value
-                try:
-                    # Try to parse as JSON
-                    value = json.loads(value)
-                except (json.JSONDecodeError, TypeError):
-                    # Keep as string
-                    pass
-                
-                # Update config
-                current = self.config
-                for part in parts[:-1]:
-                    if part.lower() not in current:
-                        current[part.lower()] = {}
-                    current = current[part.lower()]
-                
-                # Set value
-                current[parts[-1].lower()] = value
-    
-    def get(self, path: str, default: Any = None) -> Any:
-        """
-        Get a configuration value by path
-        
-        Args:
-            path: Path to the configuration value (dot notation)
-            default: Default value if not found
+        # Use default configuration
+        if use_as_fallback:
+            self._config = default_config
+            logger.warning("Using default configuration as fallback")
+            return
             
-        Returns:
-            The configuration value
-        """
-        try:
-            parts = path.split('.')
-            value = self.config
-            
-            for part in parts:
-                if isinstance(value, dict) and part in value:
-                    value = value[part]
-                else:
-                    return default
-            
-            return value
-            
-        except Exception as e:
-            logger.warning(f"Error getting configuration value for {path}: {e}")
-            return default
-    
-    def set(self, path: str, value: Any) -> bool:
-        """
-        Set a configuration value by path
-        
-        Args:
-            path: Path to the configuration value (dot notation)
-            value: Value to set
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        try:
-            parts = path.split('.')
-            config = self.config
-            
-            # Navigate to the parent element
-            for part in parts[:-1]:
-                if part not in config:
-                    config[part] = {}
-                config = config[part]
-            
-            # Set the value
-            config[parts[-1]] = value
-            
-            # Save to file
-            return self.save_config()
-            
-        except Exception as e:
-            logger.error(f"Error setting configuration value for {path}: {e}")
-            return False
-    
-    def save_config(self) -> bool:
-        """
-        Save configuration to file
-        
-        Returns:
-            bool: True if successful, False otherwise
-        """
         try:
             # Create directory if it doesn't exist
-            config_file = Path(self.config_path)
-            config_file.parent.mkdir(parents=True, exist_ok=True)
+            os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
             
-            # Write to file
-            with open(config_file, 'w') as file:
-                json.dump(self.config, file, indent=4)
+            # Write default configuration to file
+            with open(self.config_path, 'w') as f:
+                json.dump(default_config, f, indent=4)
                 
-            logger.info(f"Configuration saved to {self.config_path}")
-            return True
+            # Use default configuration
+            self._config = default_config
             
+            logger.info(f"Default configuration created at {self.config_path}")
         except Exception as e:
-            logger.error(f"Error saving configuration to {self.config_path}: {e}")
-            return False
+            logger.error(f"Error creating default configuration: {e}")
+            self._config = default_config
     
-    def get_database_config(self) -> Dict[str, Any]:
+    def _load_env_variables(self):
         """
-        Get database configuration with environment variable overrides
+        Load configuration from environment variables
         
+        Environment variables should be
+        """
+        # Implementation can be added later if needed
+        pass
+        
+    def get(self, key_path: str, default: Any = None) -> Any:
+        """
+        Get a configuration value by its key path
+        
+        Args:
+            key_path: Dot-separated path to the configuration key (e.g. "database.path")
+            default: Default value to return if the key doesn't exist
+            
         Returns:
-            Database configuration
+            The configuration value or default if not found
         """
-        # Get base configuration
-        config = self.get('database', {})
-        
-        # Override with environment variables
-        db_path = env_manager.get("FACE_ATTENDANCE_DB_PATH", config.get('path'))
-        if db_path:
-            config['path'] = db_path
-        
-        pool_size = env_manager.get_int("FACE_ATTENDANCE_DB_POOL_SIZE", config.get('pool_size'))
-        if pool_size is not None:
-            config['pool_size'] = pool_size
-        
-        return config
-    
-    def get_security_config(self) -> Dict[str, Any]:
-        """
-        Get security configuration with environment variable overrides
-        
-        Returns:
-            Security configuration
-        """
-        # Get base configuration
-        config = self.get('security', {})
-        
-        # Override with environment variables
-        use_encryption = env_manager.get_bool("FACE_ATTENDANCE_USE_ENCRYPTION", config.get('use_encryption'))
-        if use_encryption is not None:
-            config['use_encryption'] = use_encryption
-        
-        return config
-    
-    def get_camera_config(self) -> Dict[str, Any]:
-        """
-        Get camera configuration
-        
-        Returns:
-            Camera configuration
-        """
-        return self.get('camera', {})
-    
-    def get_face_recognition_config(self) -> Dict[str, Any]:
-        """
-        Get face recognition configuration
-        
-        Returns:
-            Face recognition configuration
-        """
-        # Get base configuration
-        config = self.get('face_recognition', {})
-        
-        # Override with environment variables
-        threshold = env_manager.get_float("FACE_ATTENDANCE_RECOGNITION_THRESHOLD", 
-                                       config.get('confidence_threshold'))
-        if threshold is not None:
-            config['confidence_threshold'] = threshold
-        
-        use_gpu = env_manager.get_bool("FACE_ATTENDANCE_USE_GPU", config.get('use_gpu'))
-        if use_gpu is not None:
-            config['use_gpu'] = use_gpu
-        
-        return config
+        try:
+            # Split the key path into parts
+            keys = key_path.split('.')
+            
+            # Start with the root config
+            value = self._config
+            
+            # Navigate through the nested dictionary
+            for key in keys:
+                if isinstance(value, dict) and key in value:
+                    value = value[key]
+                else:
+                    return default
+                    
+            return value
+        except Exception as e:
+            logger.error(f"Error accessing configuration key '{key_path}': {e}")
+            return default

@@ -37,8 +37,8 @@ class ModernAttendanceApp(ctk.CTk):
         self.config = AppConfig()
         
         # Initialize UI theme based on configuration
-        ui_config = self.config.get("ui")
-        theme = ui_config.get("theme", "system")
+        ui_config = self.config.get("ui", {})
+        theme = ui_config.get("theme", "system") if isinstance(ui_config, dict) else "system"
         ctk.set_appearance_mode(theme)
         
         # Configure window
@@ -102,7 +102,7 @@ class ModernAttendanceApp(ctk.CTk):
         self.show_dashboard()
         
         # Schedule garbage collection to free memory
-        if self.config.get("memory", "auto_gc", True):
+        if self.config.get("memory.auto_gc", True):
             self.schedule_gc()
     
     def create_user_info(self):

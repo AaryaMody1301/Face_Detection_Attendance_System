@@ -1,282 +1,229 @@
 """
-Environment variable manager for secure credential handling
+Environment Manager for the Face Detection Attendance System
+
+This module provides a centralized way to manage environment variables
+and dotenv files for the application.
 """
 import os
-import json
 import logging
+from typing import Dict, Any, Optional, Union
 from pathlib import Path
-from typing import Any, Dict, Optional
-import dotenv
-
-from .exceptions import ConfigurationError
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 class EnvManager:
     """
-    Manages environment variables and secure configuration settings
+    Environment Manager for handling environment variables and .env files
     
-    This class handles loading configuration from environment variables,
-    with fallback to a .env file and default values.
+    Attributes:
+        env_file: Path to the environment file
+        _env_vars: Dictionary of environment variables loaded from .env file
     """
     
-    def __init__(self, env_file: str = ".env"):
+    def __init__(self, env_file: Optional[str] = None):
         """
-        Initialize the environment manager
+        Initialize environment manager
         
         Args:
-            env_file: Path to the .env file
+            env_file: Path to the environment file (default: .env in project root)
         """
-        self.env_file = env_file
-        self._config_cache = {}
+        # Set default .env file path if not provided
+        self.env_file = env_file or os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env")
         
-        # Load environment variables from .env file if it exists
-        env_path = Path(env_file)
-        if env_path.exists():
-            dotenv.load_dotenv(env_file)
-            logger.info(f"Loaded environment variables from {env_file}")
-        else:
-            logger.warning(f"Environment file {env_file} not found, using system environment variables")
-    
-    def get(self, key: str, default: Any = None, required: bool = False) -> Any:
-        """
-        Get a configuration value from environment variables
+        # Dictionary to store environment variables loaded from .env
+        self._env_vars = {}
         
-        Args:
-            key: The configuration key
-            default: Default value if not found
-            required: Whether the configuration is required
-            
-        Returns:
-            The configuration value
-            
-        Raises:
-            ConfigurationError: If required configuration is missing
-        """
-        # Check cache first
-        if key in self._config_cache:
-            return self._config_cache[key]
+        # Load environment variables from .env file
+        self._load_env_file()
         
-        # Try to get from environment
-        value = os.environ.get(key)
-        
-        # Handle missing required value
-        if value is None and required and default is None:
-            error_msg = f"Required configuration '{key}' is missing"
-            logger.error(error_msg)
-            raise ConfigurationError(error_msg)
-        
-        # Use default if not found
-        if value is None:
-            value = default
-        
-        # Parse JSON values
-        if isinstance(value, str) and value.startswith('{') and value.endswith('}'):
-            try:
-                value = json.loads(value)
-            except json.JSONDecodeError as e:
-                logger.warning(f"Failed to parse JSON value for key '{key}': {e}")
-        
-        # Cache for future use
-        self._config_cache[key] = value
-        
-        return value
-    
-    def get_int(self, key: str, default: Optional[int] = None, 
-               required: bool = False) -> Optional[int]:
-        """
-        Get an integer configuration value
-        
-        Args:
-            key: The configuration key
-            default: Default value if not found
-            required: Whether the configuration is required
-            
-        Returns:
-            The configuration value as an integer
-            
-        Raises:
-            ConfigurationError: If required configuration is missing or not an integer
-        """
-        value = self.get(key, default, required)
-        
-        if value is None:
-            return None
-            
-        try:
-            return int(value)
-        except (ValueError, TypeError) as e:
-            error_msg = f"Configuration '{key}' value '{value}' is not a valid integer"
-            logger.error(error_msg)
-            raise ConfigurationError(error_msg) from e
-    
-    def get_float(self, key: str, default: Optional[float] = None, 
-                required: bool = False) -> Optional[float]:
-        """
-        Get a float configuration value
-        
-        Args:
-            key: The configuration key
-            default: Default value if not found
-            required: Whether the configuration is required
-            
-        Returns:
-            The configuration value as a float
-            
-        Raises:
-            ConfigurationError: If required configuration is missing or not a float
-        """
-        value = self.get(key, default, required)
-        
-        if value is None:
-            return None
-            
-        try:
-            return float(value)
-        except (ValueError, TypeError) as e:
-            error_msg = f"Configuration '{key}' value '{value}' is not a valid float"
-            logger.error(error_msg)
-            raise ConfigurationError(error_msg) from e
-    
-    def get_bool(self, key: str, default: Optional[bool] = None, 
-               required: bool = False) -> Optional[bool]:
-        """
-        Get a boolean configuration value
-        
-        Args:
-            key: The configuration key
-            default: Default value if not found
-            required: Whether the configuration is required
-            
-        Returns:
-            The configuration value as a boolean
-            
-        Raises:
-            ConfigurationError: If required configuration is missing
-        """
-        value = self.get(key, default, required)
-        
-        if value is None:
-            return None
-            
-        if isinstance(value, bool):
-            return value
-            
-        if isinstance(value, (int, float)):
-            return bool(value)
-            
-        if isinstance(value, str):
-            value = value.lower()
-            if value in ('true', 'yes', '1', 'y'):
-                return True
-            if value in ('false', 'no', '0', 'n'):
-                return False
-        
-        error_msg = f"Configuration '{key}' value '{value}' is not a valid boolean"
-        logger.error(error_msg)
-        raise ConfigurationError(error_msg)
-    
-    def get_list(self, key: str, default: Optional[list] = None, 
-               required: bool = False, delimiter: str = ',') -> Optional[list]:
-        """
-        Get a list configuration value
-        
-        Args:
-            key: The configuration key
-            default: Default value if not found
-            required: Whether the configuration is required
-            delimiter: Delimiter for string values
-            
-        Returns:
-            The configuration value as a list
-            
-        Raises:
-            ConfigurationError: If required configuration is missing
-        """
-        value = self.get(key, default, required)
-        
-        if value is None:
-            return None
-            
-        if isinstance(value, list):
-            return value
-            
-        if isinstance(value, str):
-            return [item.strip() for item in value.split(delimiter)]
-            
-        error_msg = f"Configuration '{key}' value '{value}' is not a valid list"
-        logger.error(error_msg)
-        raise ConfigurationError(error_msg)
-    
-    def set(self, key: str, value: Any) -> None:
-        """
-        Set an environment variable
-        
-        Args:
-            key: The configuration key
-            value: The configuration value
-        """
-        if value is None:
-            # Unset the variable
-            if key in os.environ:
-                del os.environ[key]
-            if key in self._config_cache:
-                del self._config_cache[key]
+    def _load_env_file(self):
+        """Load environment variables from .env file"""
+        if not os.path.exists(self.env_file):
+            logger.debug(f"Environment file not found: {self.env_file}")
             return
             
-        # Convert to string if needed
-        if not isinstance(value, str):
-            if isinstance(value, (dict, list)):
-                value = json.dumps(value)
-            else:
-                value = str(value)
-        
-        # Set in environment and cache
-        os.environ[key] = value
-        self._config_cache[key] = value
-        
-    def save_to_env_file(self) -> bool:
-        """
-        Save current environment variables to .env file
-        
-        Returns:
-            bool: True if successful, False otherwise
-        """
         try:
-            # Create directory if it doesn't exist
-            env_path = Path(self.env_file)
-            env_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.env_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    
+                    # Skip empty lines and comments
+                    if not line or line.startswith('#'):
+                        continue
+                    
+                    # Parse key-value pair
+                    if '=' in line:
+                        key, value = line.split('=', 1)
+                        key = key.strip()
+                        value = value.strip()
+                        
+                        # Remove quotes if present
+                        if value.startswith('"') and value.endswith('"'):
+                            value = value[1:-1]
+                        elif value.startswith("'") and value.endswith("'"):
+                            value = value[1:-1]
+                        
+                        # Store in environment dictionary
+                        self._env_vars[key] = value
+                        
+                        # Set environment variable if not already set
+                        if key not in os.environ:
+                            os.environ[key] = value
             
-            # Load existing content
-            existing_env = {}
-            if env_path.exists():
-                with open(env_path, 'r') as file:
-                    for line in file:
-                        line = line.strip()
-                        if line and not line.startswith('#') and '=' in line:
-                            key, value = line.split('=', 1)
-                            existing_env[key.strip()] = value.strip()
-            
-            # Update with cache values
-            for key, value in self._config_cache.items():
-                if value is not None:
-                    if isinstance(value, (dict, list)):
-                        existing_env[key] = json.dumps(value)
-                    else:
-                        existing_env[key] = str(value)
-            
-            # Write back to file
-            with open(env_path, 'w') as file:
-                for key, value in existing_env.items():
-                    file.write(f"{key}={value}\n")
-            
-            logger.info(f"Environment variables saved to {self.env_file}")
-            return True
+            logger.debug(f"Loaded environment variables from {self.env_file}")
             
         except Exception as e:
-            logger.error(f"Failed to save environment variables to {self.env_file}: {e}")
-            return False
+            logger.error(f"Error loading environment file: {e}")
+    
+    def get(self, key: str, default: Any = None) -> Any:
+        """
+        Get environment variable
+        
+        Args:
+            key: Environment variable name
+            default: Default value if not found
+            
+        Returns:
+            Environment variable value or default
+        """
+        # Check OS environment first
+        value = os.environ.get(key)
+        
+        # Fall back to .env file
+        if value is None:
+            value = self._env_vars.get(key)
+        
+        # Return value or default
+        return value if value is not None else default
+    
+    def set(self, key: str, value: str, persist: bool = False):
+        """
+        Set environment variable
+        
+        Args:
+            key: Environment variable name
+            value: Environment variable value
+            persist: Whether to save to .env file
+        """
+        # Set in OS environment
+        os.environ[key] = value
+        
+        # Set in internal dictionary
+        self._env_vars[key] = value
+        
+        # Save to .env file if requested
+        if persist:
+            self._save_to_env_file()
+    
+    def _save_to_env_file(self):
+        """Save environment variables to .env file"""
+        try:
+            # Read existing file if it exists
+            lines = []
+            existing_keys = set()
+            
+            if os.path.exists(self.env_file):
+                with open(self.env_file, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        
+                        # Keep comments and empty lines
+                        if not line or line.startswith('#'):
+                            lines.append(line)
+                            continue
+                        
+                        # Parse key for existing variables
+                        if '=' in line:
+                            key = line.split('=', 1)[0].strip()
+                            existing_keys.add(key)
+                            
+                            # Replace line if key is in our dictionary
+                            if key in self._env_vars:
+                                lines.append(f"{key}={self._env_vars[key]}")
+                                continue
+                        
+                        # Keep line as is
+                        lines.append(line)
+            
+            # Add new variables that weren't in the file
+            for key, value in self._env_vars.items():
+                if key not in existing_keys:
+                    lines.append(f"{key}={value}")
+            
+            # Write back to file
+            os.makedirs(os.path.dirname(self.env_file), exist_ok=True)
+            with open(self.env_file, 'w') as f:
+                f.write('\n'.join(lines))
+            
+            logger.debug(f"Saved environment variables to {self.env_file}")
+            
+        except Exception as e:
+            logger.error(f"Error saving environment file: {e}")
+    
+    def delete(self, key: str, persist: bool = False):
+        """
+        Delete environment variable
+        
+        Args:
+            key: Environment variable name
+            persist: Whether to remove from .env file
+        """
+        # Remove from OS environment
+        if key in os.environ:
+            del os.environ[key]
+        
+        # Remove from internal dictionary
+        if key in self._env_vars:
+            del self._env_vars[key]
+        
+        # Remove from .env file if requested
+        if persist:
+            self._save_to_env_file()
+    
+    def get_all(self) -> Dict[str, str]:
+        """
+        Get all environment variables from .env file
+        
+        Returns:
+            Dictionary of all environment variables from .env file
+        """
+        return self._env_vars.copy()
+    
+    def get_credential(self, key: str, default: Any = None) -> str:
+        """
+        Get credential from secure source
+        
+        Currently just uses environment variables, but could be extended
+        to use a more secure credential store.
+        
+        Args:
+            key: Credential key
+            default: Default value if not found
+            
+        Returns:
+            Credential value or default
+        """
+        # Prefix credential keys
+        prefixed_key = f"FACE_APP_CRED_{key.upper()}"
+        
+        # Try to get credential
+        return self.get(prefixed_key, default)
+    
+    def set_credential(self, key: str, value: str, persist: bool = False):
+        """
+        Set credential in secure source
+        
+        Args:
+            key: Credential key
+            value: Credential value
+            persist: Whether to save to .env file
+        """
+        # Prefix credential keys
+        prefixed_key = f"FACE_APP_CRED_{key.upper()}"
+        
+        # Set credential
+        self.set(prefixed_key, value, persist)
 
 
 # Create a singleton instance

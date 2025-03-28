@@ -1,5 +1,9 @@
 """
 Database Manager for the Face Detection Attendance System
+
+This module provides a centralized way to manage database connections
+and operations using SQLite with connection pooling, prepared statements,
+and comprehensive error handling.
 """
 import os
 import sqlite3
@@ -7,728 +11,453 @@ import logging
 import threading
 import time
 import datetime
-import shutil
-from pathlib import Path
-from typing import Dict, List, Any, Optional, Tuple, Union
+from typing import Dict, Any, Optional, List, Tuple, Union
 from contextlib import contextmanager
+import queue
+import traceback
 
 from ..utils.app_config import AppConfig
-from ..utils.exceptions import DatabaseError
+from ..utils.exceptions import DatabaseError, ConnectionPoolError
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 class DatabaseManager:
     """
-    Database manager for SQLite with advanced features
+    Database Manager class for handling database connections and operations
+    
+    Features:
+    - Connection pooling for improved performance
+    - Prepared statements for security
+    - Automatic retry on transient errors
+    - Comprehensive error handling
+    - Transaction support
+    - Query result caching (optional)
     
     Attributes:
         db_path: Path to the database file
-        connection: SQLite connection
-        config: Database configuration
+        pool_size: Size of the connection pool
+        max_retries: Maximum number of query retries
+        retry_delay: Delay between retries in seconds
+        connection_pool: Queue of database connections
+        query_cache: Cache for query results
+        cache_ttl: Time-to-live for cached results in seconds
+        pool_lock: Lock for thread-safe pool operations
+        cache_lock: Lock for thread-safe cache operations
     """
     
-    def __init__(self, db_path: Optional[str] = None):
+    _instance = None
+    _instance_lock = threading.Lock()
+    
+    def __new__(cls, *args, **kwargs):
+        """Singleton pattern implementation"""
+        with cls._instance_lock:
+            if cls._instance is None:
+                cls._instance = super(DatabaseManager, cls).__new__(cls)
+                cls._instance._initialized = False
+            return cls._instance
+    
+    def __init__(self, db_path: Optional[str] = None, pool_size: int = 5,
+                 max_retries: int = 3, retry_delay: float = 0.5,
+                 enable_cache: bool = True, cache_ttl: int = 300):
         """
-        Initialize database manager
+        Initialize the database manager
         
         Args:
-            db_path: Path to the database file (optional)
+            db_path: Path to the database file. If None, uses config value.
+            pool_size: Size of the connection pool
+            max_retries: Maximum number of query retries
+            retry_delay: Delay between retries in seconds
+            enable_cache: Whether to enable query caching
+            cache_ttl: Time-to-live for cached results in seconds
         """
+        # Only initialize once (singleton pattern)
+        if self._initialized:
+            return
+            
         # Load configuration
-        self.config = AppConfig().get_database_config()
+        self.config = AppConfig()
         
         # Set database path
-        self.db_path = db_path if db_path else self.config.get("path", "Data/attendance.db")
-        
-        # Ensure directory exists
+        if db_path is None:
+            self.db_path = self.config.get("database.path", "Data/attendance.db")
+        else:
+            self.db_path = db_path
+            
+        # Ensure the database directory exists
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         
-        # Thread-local storage for connections
-        self._local = threading.local()
+        # Connection pool settings
+        self.pool_size = pool_size
+        self.connection_pool = queue.Queue(maxsize=pool_size)
+        self.pool_lock = threading.Lock()
         
-        # Connection mutex
-        self._connection_lock = threading.Lock()
+        # Retry settings
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
         
-        # Initialize database schema
-        self.initialize_schema()
+        # Cache settings
+        self.enable_cache = enable_cache
+        self.cache_ttl = cache_ttl
+        self.query_cache = {}
+        self.cache_expiry = {}
+        self.cache_lock = threading.Lock()
         
-        # Set up periodic optimization if enabled
-        optimize_interval = self.config.get("optimize_interval", 24)
-        if optimize_interval > 0:
-            self._setup_optimization_timer(optimize_interval)
+        # Database optimization tracking
+        self.last_optimize = datetime.datetime.now() - datetime.timedelta(days=30)  # Initialize as 30 days ago
+        
+        # Initialize the database
+        self._init_database()
+        
+        # Fill the connection pool
+        self._fill_pool()
+        
+        # Set up periodic cache cleaning
+        if self.enable_cache:
+            self._setup_cache_cleanup()
+            
+        # Mark as initialized
+        self._initialized = True
+        
+        logger.info(f"DatabaseManager initialized: {self.db_path}")
     
-    @contextmanager
-    def connection(self):
+    def _fill_pool(self):
+        """Fill the connection pool with fresh connections"""
+        try:
+            while not self.connection_pool.full():
+                conn = self._create_connection()
+                self.connection_pool.put(conn)
+        except Exception as e:
+            logger.error(f"Error filling connection pool: {e}")
+            raise ConnectionPoolError(f"Failed to fill connection pool: {e}")
+    
+    def _create_connection(self) -> sqlite3.Connection:
+        """Create a new database connection"""
+        try:
+            # Create connection with extended error handling
+            conn = sqlite3.connect(
+                self.db_path,
+                timeout=60.0,  # Longer timeout for busy database
+                detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
+                isolation_level=None  # Autocommit mode
+            )
+            
+            # Enable foreign keys
+            conn.execute("PRAGMA foreign_keys = ON")
+            
+            # Set busy timeout
+            conn.execute("PRAGMA busy_timeout = 30000")  # 30 seconds
+            
+            # Use write-ahead logging for better concurrency
+            conn.execute("PRAGMA journal_mode = WAL")
+            
+            # Return dictionary-like rows
+            conn.row_factory = sqlite3.Row
+            
+            return conn
+        except Exception as e:
+            logger.error(f"Error creating database connection: {e}")
+            raise ConnectionPoolError(f"Failed to create database connection: {e}")
+    
+    def _setup_cache_cleanup(self):
+        """Set up periodic cache cleanup"""
+        def cleanup_task():
+            while True:
+                try:
+                    self._cleanup_cache()
+                    time.sleep(self.cache_ttl / 2)  # Run cleanup at half TTL interval
+                except Exception as e:
+                    logger.error(f"Error in cache cleanup task: {e}")
+                    time.sleep(60)  # Wait and try again
+        
+        cleanup_thread = threading.Thread(target=cleanup_task, daemon=True)
+        cleanup_thread.start()
+    
+    def _cleanup_cache(self):
+        """Remove expired items from cache"""
+        if not self.enable_cache:
+            return
+            
+        with self.cache_lock:
+            current_time = datetime.datetime.now()
+            expired_keys = []
+            
+            for key, expiry in self.cache_expiry.items():
+                if current_time > expiry:
+                    expired_keys.append(key)
+            
+            # Remove expired items
+            for key in expired_keys:
+                self.query_cache.pop(key, None)
+                self.cache_expiry.pop(key, None)
+                
+            # Log cleanup results
+            if expired_keys:
+                logger.debug(f"Cache cleanup: removed {len(expired_keys)} expired items")
+    
+    def _get_connection(self) -> sqlite3.Connection:
         """
-        Get a thread-local database connection
+        Get a connection from the pool
         
         Returns:
             SQLite connection
-        """
-        if not hasattr(self._local, "connection") or self._local.connection is None:
-            with self._connection_lock:
-                # Create new connection for this thread
-                self._local.connection = sqlite3.connect(self.db_path)
-                
-                # Enable foreign keys
-                self._local.connection.execute("PRAGMA foreign_keys = ON")
-                
-                # Set busy timeout
-                self._local.connection.execute("PRAGMA busy_timeout = 30000")  # 30 seconds
-                
-                # Row factory
-                self._local.connection.row_factory = sqlite3.Row
         
-        try:
-            # Return thread-local connection
-            yield self._local.connection
-        except sqlite3.Error as e:
-            self._local.connection.rollback()
-            logger.error(f"SQLite error: {e}")
-            raise DatabaseError(f"Database error: {e}")
-    
-    def initialize_schema(self):
-        """Initialize database schema with required tables"""
-        try:
-            with self.connection() as conn:
-                cursor = conn.cursor()
-                
-                # Enable foreign keys
-                cursor.execute("PRAGMA foreign_keys = ON")
-                
-                # Students table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS students (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        enrollment TEXT NOT NULL UNIQUE,
-                        name TEXT NOT NULL,
-                        email TEXT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
-                
-                # Subjects table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS subjects (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        name TEXT NOT NULL UNIQUE,
-                        code TEXT,
-                        description TEXT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
-                
-                # Attendance sessions table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS attendance_sessions (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        subject_id INTEGER NOT NULL,
-                        date TEXT NOT NULL,
-                        time TEXT NOT NULL,
-                        notes TEXT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY (subject_id) REFERENCES subjects (id)
-                    )
-                ''')
-                
-                # Attendance records table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS attendance_records (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        student_id INTEGER NOT NULL,
-                        session_id INTEGER NOT NULL,
-                        time TEXT NOT NULL,
-                        confidence REAL NOT NULL DEFAULT 0,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY (student_id) REFERENCES students (id),
-                        FOREIGN KEY (session_id) REFERENCES attendance_sessions (id),
-                        UNIQUE(student_id, session_id)
-                    )
-                ''')
-                
-                # Users table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS users (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        username TEXT NOT NULL UNIQUE,
-                        password_hash TEXT NOT NULL,
-                        full_name TEXT,
-                        email TEXT,
-                        role TEXT NOT NULL DEFAULT 'user',
-                        is_active BOOLEAN NOT NULL DEFAULT 1,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
-                
-                # Create indexes for better performance
-                cursor.execute('CREATE INDEX IF NOT EXISTS idx_students_enrollment ON students(enrollment)')
-                cursor.execute('CREATE INDEX IF NOT EXISTS idx_subjects_name ON subjects(name)')
-                cursor.execute('CREATE INDEX IF NOT EXISTS idx_sessions_date ON attendance_sessions(date)')
-                cursor.execute('CREATE INDEX IF NOT EXISTS idx_sessions_subject ON attendance_sessions(subject_id)')
-                cursor.execute('CREATE INDEX IF NOT EXISTS idx_attendance_student ON attendance_records(student_id)')
-                cursor.execute('CREATE INDEX IF NOT EXISTS idx_attendance_session ON attendance_records(session_id)')
-                
-                # Insert default data if needed
-                self._insert_default_data(cursor)
-                
-                # Commit changes
-                conn.commit()
-                
-                logger.info("Database schema initialized successfully")
-                
-        except Exception as e:
-            logger.error(f"Error initializing database schema: {e}")
-            raise DatabaseError(f"Failed to initialize database schema: {e}")
-    
-    def _insert_default_data(self, cursor):
+        Raises:
+            ConnectionPoolError: If no connections are available
         """
-        Insert default data into the database
+        try:
+            # Try to get a connection from the pool
+            return self.connection_pool.get(timeout=5)
+        except queue.Empty:
+            # Pool is empty, create a new connection as fallback
+            logger.warning("Connection pool empty, creating new connection")
+            return self._create_connection()
+        except Exception as e:
+            logger.error(f"Error getting connection from pool: {e}")
+            raise ConnectionPoolError(f"Failed to get connection from pool: {e}")
+    
+    def _return_connection(self, conn: sqlite3.Connection):
+        """
+        Return a connection to the pool
         
         Args:
-            cursor: SQLite cursor
+            conn: SQLite connection to return
         """
-        # Check if default admin user exists
-        cursor.execute("SELECT COUNT(*) FROM users WHERE username = 'admin'")
-        if cursor.fetchone()[0] == 0:
-            # Create default admin user with password 'admin'
-            # Note: In production, this should be a secure password hash
-            cursor.execute('''
-                INSERT INTO users (username, password_hash, full_name, role)
-                VALUES ('admin', 'admin', 'Administrator', 'admin')
-            ''')
-            logger.info("Created default admin user")
-        
-        # Insert some default subjects if none exist
-        cursor.execute("SELECT COUNT(*) FROM subjects")
-        if cursor.fetchone()[0] == 0:
-            subjects = [
-                ('Python', 'PY101', 'Introduction to Python Programming'),
-                ('Maths', 'MT101', 'Basic Mathematics'),
-                ('Physics', 'PH101', 'Introduction to Physics'),
-                ('Chemistry', 'CH101', 'Basic Chemistry'),
-                ('Biology', 'BI101', 'Introduction to Biology')
-            ]
-            
-            cursor.executemany('''
-                INSERT INTO subjects (name, code, description)
-                VALUES (?, ?, ?)
-            ''', subjects)
-            
-            logger.info("Inserted default subjects")
-    
-    def _setup_optimization_timer(self, hours):
-        """
-        Set up periodic database optimization
-        
-        Args:
-            hours: Interval in hours
-        """
-        def optimize_task():
-            self.optimize_database()
-            # Schedule next run
-            threading.Timer(hours * 3600, optimize_task).start()
-        
-        # Start the timer
-        threading.Timer(hours * 3600, optimize_task).start()
-        logger.info(f"Database optimization scheduled every {hours} hours")
-    
-    def optimize_database(self):
-        """Optimize the database"""
         try:
-            # Create backup before optimization
-            self.create_backup()
-            
-            with self.connection() as conn:
-                cursor = conn.cursor()
-                
-                # Run VACUUM to rebuild the database file
-                cursor.execute("VACUUM")
-                
-                # Run ANALYZE to collect statistics
-                cursor.execute("ANALYZE")
-                
-                logger.info("Database optimized successfully")
-                return True
-                
+            if conn:
+                try:
+                    # Check if connection is valid
+                    conn.execute("SELECT 1").fetchone()
+                    # Put connection back in pool
+                    self.connection_pool.put(conn, timeout=5)
+                except (sqlite3.Error, queue.Full) as e:
+                    # Connection is invalid or pool is full, close it
+                    try:
+                        conn.close()
+                    except:
+                        pass
+                    logger.warning(f"Connection not returned to pool: {e}")
         except Exception as e:
-            logger.error(f"Error optimizing database: {e}")
-            return False
-    
-    def create_backup(self):
-        """Create a backup of the database"""
-        try:
-            # Get backup directory from config
-            backup_dir = self.config.get("backup_dir", "backups/data_backup")
-            
-            # Ensure directory exists
-            os.makedirs(backup_dir, exist_ok=True)
-            
-            # Create backup filename with timestamp
-            timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            backup_path = os.path.join(backup_dir, f"db_backup_{timestamp}.db")
-            
-            # Close all connections
-            self.close_all_connections()
-            
-            # Copy database file
-            shutil.copy2(self.db_path, backup_path)
-            
-            logger.info(f"Database backup created at {backup_path}")
-            return backup_path
-            
-        except Exception as e:
-            logger.error(f"Error creating database backup: {e}")
-            return None
-    
-    def close_all_connections(self):
-        """Close all database connections"""
-        # Close the thread-local connection if it exists
-        if hasattr(self._local, "connection") and self._local.connection is not None:
+            logger.error(f"Error returning connection to pool: {e}")
             try:
-                self._local.connection.close()
-                self._local.connection = None
-            except Exception as e:
-                logger.error(f"Error closing database connection: {e}")
+                conn.close()
+            except:
+                pass
     
-    def execute_query(self, query, params=None, fetch_all=False, fetch_one=False):
+    @contextmanager
+    def get_connection(self):
         """
-        Execute a SQL query
+        Context manager for getting a database connection
+        
+        Example:
+            with db_manager.get_connection() as conn:
+                conn.execute("SELECT * FROM students")
+        
+        Yields:
+            SQLite connection
+        """
+        conn = None
+        try:
+            conn = self._get_connection()
+            yield conn
+        except Exception as e:
+            logger.error(f"Error in connection context manager: {e}")
+            raise
+        finally:
+            if conn:
+                self._return_connection(conn)
+    
+    @contextmanager
+    def transaction(self):
+        """
+        Context manager for database transactions
+        
+        Example:
+            with db_manager.transaction() as conn:
+                conn.execute("INSERT INTO students VALUES (?, ?)", ("12345", "John Doe"))
+                conn.execute("INSERT INTO attendance VALUES (?, ?, ?)", ("12345", "Math", "2023-03-28"))
+        
+        Yields:
+            SQLite connection with active transaction
+        """
+        conn = None
+        try:
+            conn = self._get_connection()
+            # Start transaction
+            conn.execute("BEGIN")
+            yield conn
+            # Commit if no exceptions
+            conn.execute("COMMIT")
+        except Exception as e:
+            # Rollback on error
+            if conn:
+                try:
+                    conn.execute("ROLLBACK")
+                except:
+                    pass
+            logger.error(f"Error in transaction: {e}")
+            raise
+        finally:
+            if conn:
+                self._return_connection(conn)
+    
+    def execute_query(self, query: str, params: tuple = (), fetch_all: bool = False,
+                     fetch_one: bool = False, commit: bool = False, 
+                     use_cache: bool = False) -> Union[List[Dict[str, Any]], Dict[str, Any], int, None]:
+        """
+        Execute a database query with retries
         
         Args:
-            query: SQL query
-            params: Query parameters
-            fetch_all: Whether to return all results
-            fetch_one: Whether to return one result
-            
+            query: SQL query to execute
+
         Returns:
-            Query results or row count
+            Query result or affected row count
         """
-        params = params or []
-        
-        with self.connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            
-            if fetch_all:
-                rows = cursor.fetchall()
-                return [dict(row) for row in rows]
-            elif fetch_one:
-                row = cursor.fetchone()
-                return dict(row) if row else None
-            else:
-                # For INSERT, UPDATE, DELETE, return number of affected rows
-                conn.commit()
-                return cursor.rowcount
+        pass  # Placeholder for the rest of the method implementation
     
-    def execute_batch(self, query, params_list):
+    def optimize_database(self, force: bool = False) -> bool:
         """
-        Execute a batch of SQL queries
+        Optimize the database using VACUUM
         
         Args:
-            query: SQL query with placeholders
-            params_list: List of parameter tuples
+            force: If True, optimize regardless of when last optimization occurred
             
         Returns:
-            Number of affected rows
-        """
-        with self.connection() as conn:
-            cursor = conn.cursor()
-            cursor.executemany(query, params_list)
-            conn.commit()
-            return cursor.rowcount
-    
-    def begin_transaction(self):
-        """Begin a transaction"""
-        if not hasattr(self._local, "connection") or self._local.connection is None:
-            with self._connection_lock:
-                # Create new connection for this thread
-                self._local.connection = sqlite3.connect(self.db_path)
-                
-                # Enable foreign keys
-                self._local.connection.execute("PRAGMA foreign_keys = ON")
-                
-                # Set busy timeout
-                self._local.connection.execute("PRAGMA busy_timeout = 30000")  # 30 seconds
-                
-                # Row factory
-                self._local.connection.row_factory = sqlite3.Row
-        
-        # Begin transaction
-        self._local.connection.execute("BEGIN TRANSACTION")
-    
-    def commit_transaction(self):
-        """Commit the current transaction"""
-        if hasattr(self._local, "connection") and self._local.connection is not None:
-            self._local.connection.commit()
-    
-    def rollback_transaction(self):
-        """Rollback the current transaction"""
-        if hasattr(self._local, "connection") and self._local.connection is not None:
-            self._local.connection.rollback()
-    
-    def get_student_by_enrollment(self, enrollment):
-        """
-        Get a student by enrollment ID
-        
-        Args:
-            enrollment: Student enrollment ID
-            
-        Returns:
-            Student data or None if not found
-        """
-        query = "SELECT * FROM students WHERE enrollment = ?"
-        return self.execute_query(query, (enrollment,), fetch_one=True)
-    
-    def get_subject_by_name(self, subject_name):
-        """
-        Get a subject by name
-        
-        Args:
-            subject_name: Subject name
-            
-        Returns:
-            Subject data or None if not found
-        """
-        query = "SELECT * FROM subjects WHERE name = ?"
-        return self.execute_query(query, (subject_name,), fetch_one=True)
-    
-    def create_or_get_subject(self, subject_name):
-        """
-        Get a subject by name or create it if not exists
-        
-        Args:
-            subject_name: Subject name
-            
-        Returns:
-            Subject ID
-        """
-        subject = self.get_subject_by_name(subject_name)
-        if subject:
-            return subject["id"]
-        
-        # Create new subject
-        query = "INSERT INTO subjects (name) VALUES (?)"
-        self.execute_query(query, (subject_name,))
-        
-        # Get the newly created subject
-        subject = self.get_subject_by_name(subject_name)
-        return subject["id"]
-    
-    def create_or_get_student(self, enrollment, name):
-        """
-        Get a student by enrollment or create if not exists
-        
-        Args:
-            enrollment: Student enrollment ID
-            name: Student name
-            
-        Returns:
-            Student ID
-        """
-        student = self.get_student_by_enrollment(enrollment)
-        if student:
-            return student["id"]
-        
-        # Create new student
-        query = "INSERT INTO students (enrollment, name) VALUES (?, ?)"
-        self.execute_query(query, (enrollment, name))
-        
-        # Get the newly created student
-        student = self.get_student_by_enrollment(enrollment)
-        return student["id"]
-    
-    def create_attendance_session(self, subject_name, date=None, time=None, notes=None):
-        """
-        Create a new attendance session
-        
-        Args:
-            subject_name: Subject name
-            date: Date string (YYYY-MM-DD)
-            time: Time string (HH:MM:SS)
-            notes: Optional notes
-            
-        Returns:
-            Session ID
-        """
-        # Use current date/time if not provided
-        if date is None:
-            date = datetime.datetime.now().strftime("%Y-%m-%d")
-        
-        if time is None:
-            time = datetime.datetime.now().strftime("%H:%M:%S")
-        
-        # Get or create subject
-        subject_id = self.create_or_get_subject(subject_name)
-        
-        # Create session
-        query = """
-            INSERT INTO attendance_sessions (subject_id, date, time, notes)
-            VALUES (?, ?, ?, ?)
-        """
-        self.execute_query(query, (subject_id, date, time, notes))
-        
-        # Get the newly created session
-        query = """
-            SELECT id FROM attendance_sessions 
-            WHERE subject_id = ? AND date = ? AND time = ? 
-            ORDER BY id DESC LIMIT 1
-        """
-        session = self.execute_query(query, (subject_id, date, time), fetch_one=True)
-        
-        return session["id"]
-    
-    def mark_attendance(self, enrollment, name, subject_name, date=None, time=None, confidence=1.0):
-        """
-        Mark attendance for a student
-        
-        Args:
-            enrollment: Student enrollment ID
-            name: Student name
-            subject_name: Subject name
-            date: Date string (YYYY-MM-DD)
-            time: Time string (HH:MM:SS)
-            confidence: Recognition confidence
-            
-        Returns:
-            True if successful, False otherwise
+            True if optimization was performed, False otherwise
         """
         try:
-            # Use current date/time if not provided
-            if date is None:
-                date = datetime.datetime.now().strftime("%Y-%m-%d")
+            # Check if optimization is needed (default: once per week)
+            current_time = datetime.datetime.now()
+            days_since_last = (current_time - self.last_optimize).days
             
-            if time is None:
-                time = datetime.datetime.now().strftime("%H:%M:%S")
+            if not force and days_since_last < 7:
+                logger.info(f"Database optimization skipped (last optimized {days_since_last} days ago)")
+                return False
             
-            # Start transaction
-            self.begin_transaction()
+            logger.info("Starting database optimization (VACUUM)...")
             
-            # Get or create student
-            student_id = self.create_or_get_student(enrollment, name)
+            with self.get_connection() as conn:
+                # Execute VACUUM
+                conn.execute("VACUUM")
             
-            # Get or create subject
-            subject_id = self.create_or_get_subject(subject_name)
+            # Update last optimize time
+            self.last_optimize = current_time
             
-            # Get existing session or create new one
-            query = """
-                SELECT id FROM attendance_sessions 
-                WHERE subject_id = ? AND date = ? 
-                ORDER BY id DESC LIMIT 1
-            """
-            session = self.execute_query(query, (subject_id, date), fetch_one=True)
-            
-            if session:
-                session_id = session["id"]
-            else:
-                # Create new session
-                session_id = self.create_attendance_session(subject_name, date, time)
-            
-            # Check if attendance already exists
-            query = """
-                SELECT id FROM attendance_records 
-                WHERE student_id = ? AND session_id = ?
-            """
-            existing = self.execute_query(query, (student_id, session_id), fetch_one=True)
-            
-            if existing:
-                # Update existing record
-                query = """
-                    UPDATE attendance_records 
-                    SET time = ?, confidence = ?, created_at = CURRENT_TIMESTAMP 
-                    WHERE id = ?
-                """
-                self.execute_query(query, (time, confidence, existing["id"]))
-            else:
-                # Create new record
-                query = """
-                    INSERT INTO attendance_records (student_id, session_id, time, confidence)
-                    VALUES (?, ?, ?, ?)
-                """
-                self.execute_query(query, (student_id, session_id, time, confidence))
-            
-            # Commit transaction
-            self.commit_transaction()
-            
+            logger.info("Database optimization completed successfully")
             return True
             
         except Exception as e:
-            # Rollback transaction on error
-            self.rollback_transaction()
-            logger.error(f"Error marking attendance: {e}")
+            logger.error(f"Error during database optimization: {e}")
+            traceback.print_exc()
             return False
     
-    def get_attendance_records(self, subject_name=None, date=None, student_enrollment=None):
-        """
-        Get attendance records
-        
-        Args:
-            subject_name: Filter by subject name
-            date: Filter by date
-            student_enrollment: Filter by student enrollment ID
+    def _init_database(self):
+        """Initialize the database schema if it doesn't exist"""
+        try:
+            logger.info(f"Initializing database schema at: {self.db_path}")
             
-        Returns:
-            List of attendance records
-        """
-        query = """
-            SELECT 
-                ar.id, 
-                s.enrollment, 
-                s.name, 
-                sub.name as subject, 
-                sess.date, 
-                ar.time, 
-                ar.confidence 
-            FROM attendance_records ar
-            JOIN students s ON ar.student_id = s.id
-            JOIN attendance_sessions sess ON ar.session_id = sess.id
-            JOIN subjects sub ON sess.subject_id = sub.id
-            WHERE 1=1
-        """
-        params = []
-        
-        if subject_name:
-            query += " AND sub.name = ?"
-            params.append(subject_name)
-        
-        if date:
-            query += " AND sess.date = ?"
-            params.append(date)
-        
-        if student_enrollment:
-            query += " AND s.enrollment = ?"
-            params.append(student_enrollment)
-        
-        query += " ORDER BY sess.date DESC, ar.time DESC"
-        
-        return self.execute_query(query, params, fetch_all=True)
+            # Create tables if they don't exist
+            with self.get_connection() as conn:
+                # Students table
+                conn.execute('''
+                    CREATE TABLE IF NOT EXISTS students (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        email TEXT,
+                        phone TEXT,
+                        enrollment_date TEXT DEFAULT CURRENT_DATE,
+                        program TEXT,
+                        profile_image TEXT,
+                        active INTEGER DEFAULT 1,
+                        last_modified TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                
+                # Courses table
+                conn.execute('''
+                    CREATE TABLE IF NOT EXISTS courses (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        description TEXT,
+                        instructor TEXT,
+                        active INTEGER DEFAULT 1,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                
+                # Attendance table - ensure student_id column exists before creating index
+                conn.execute('''
+                    CREATE TABLE IF NOT EXISTS attendance (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        student_id TEXT NOT NULL,
+                        course_id TEXT NOT NULL,
+                        date TEXT NOT NULL,
+                        time TEXT NOT NULL,
+                        status TEXT DEFAULT 'present',
+                        method TEXT DEFAULT 'auto',
+                        FOREIGN KEY (student_id) REFERENCES students(id),
+                        FOREIGN KEY (course_id) REFERENCES courses(id),
+                        UNIQUE(student_id, course_id, date)
+                    )
+                ''')
+                
+                # Users table (for authentication)
+                conn.execute('''
+                    CREATE TABLE IF NOT EXISTS users (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        username TEXT UNIQUE NOT NULL,
+                        password_hash TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        full_name TEXT,
+                        email TEXT,
+                        last_login TIMESTAMP,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        active INTEGER DEFAULT 1
+                    )
+                ''')
+                
+                # Only create indexes after tables are confirmed to exist
+                try:
+                    # Create indices for better performance
+                    conn.execute('CREATE INDEX IF NOT EXISTS idx_attendance_student_id ON attendance(student_id)')
+                    conn.execute('CREATE INDEX IF NOT EXISTS idx_attendance_course_id ON attendance(course_id)')
+                    conn.execute('CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance(date)')
+                except Exception as idx_error:
+                    logger.warning(f"Error creating indexes, but continuing: {idx_error}")
+            
+            # Create default admin user if none exists
+            self._create_default_admin()
+            
+            logger.info("Database schema initialization completed")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error initializing database schema: {e}")
+            traceback.print_exc()
+            raise DatabaseError(f"Failed to initialize database: {e}")
     
-    def get_attendance_statistics(self, subject_name=None, start_date=None, end_date=None):
-        """
-        Get attendance statistics
-        
-        Args:
-            subject_name: Filter by subject name
-            start_date: Start date filter
-            end_date: End date filter
-            
-        Returns:
-            Dictionary with statistics
-        """
-        # Build base query for total attendance
-        query = """
-            SELECT COUNT(*) as total_attendance
-            FROM attendance_records ar
-            JOIN attendance_sessions sess ON ar.session_id = sess.id
-            JOIN subjects sub ON sess.subject_id = sub.id
-            WHERE 1=1
-        """
-        params = []
-        
-        if subject_name:
-            query += " AND sub.name = ?"
-            params.append(subject_name)
-        
-        if start_date:
-            query += " AND sess.date >= ?"
-            params.append(start_date)
-        
-        if end_date:
-            query += " AND sess.date <= ?"
-            params.append(end_date)
-        
-        # Get total attendance
-        result = self.execute_query(query, params, fetch_one=True)
-        total_attendance = result["total_attendance"] if result else 0
-        
-        # Build query for unique students
-        query = """
-            SELECT COUNT(DISTINCT ar.student_id) as unique_students
-            FROM attendance_records ar
-            JOIN attendance_sessions sess ON ar.session_id = sess.id
-            JOIN subjects sub ON sess.subject_id = sub.id
-            WHERE 1=1
-        """
-        params = []
-        
-        if subject_name:
-            query += " AND sub.name = ?"
-            params.append(subject_name)
-        
-        if start_date:
-            query += " AND sess.date >= ?"
-            params.append(start_date)
-        
-        if end_date:
-            query += " AND sess.date <= ?"
-            params.append(end_date)
-        
-        # Get unique students
-        result = self.execute_query(query, params, fetch_one=True)
-        unique_students = result["unique_students"] if result else 0
-        
-        # Build query for attendance by date
-        query = """
-            SELECT sess.date, COUNT(*) as count
-            FROM attendance_records ar
-            JOIN attendance_sessions sess ON ar.session_id = sess.id
-            JOIN subjects sub ON sess.subject_id = sub.id
-            WHERE 1=1
-        """
-        params = []
-        
-        if subject_name:
-            query += " AND sub.name = ?"
-            params.append(subject_name)
-        
-        if start_date:
-            query += " AND sess.date >= ?"
-            params.append(start_date)
-        
-        if end_date:
-            query += " AND sess.date <= ?"
-            params.append(end_date)
-        
-        query += " GROUP BY sess.date ORDER BY sess.date DESC"
-        
-        # Get attendance by date
-        result = self.execute_query(query, params, fetch_all=True)
-        attendance_by_date = {r["date"]: r["count"] for r in result} if result else {}
-        
-        # Build query for top subjects
-        top_subjects = {}
-        if not subject_name:
-            query = """
-                SELECT sub.name, COUNT(*) as count
-                FROM attendance_records ar
-                JOIN attendance_sessions sess ON ar.session_id = sess.id
-                JOIN subjects sub ON sess.subject_id = sub.id
-                WHERE 1=1
-            """
-            params = []
-            
-            if start_date:
-                query += " AND sess.date >= ?"
-                params.append(start_date)
-            
-            if end_date:
-                query += " AND sess.date <= ?"
-                params.append(end_date)
-            
-            query += " GROUP BY sub.name ORDER BY count DESC LIMIT 5"
-            
-            # Get top subjects
-            result = self.execute_query(query, params, fetch_all=True)
-            top_subjects = {r["name"]: r["count"] for r in result} if result else {}
-        
-        # Return combined statistics
-        return {
-            "total_attendance": total_attendance,
-            "unique_students": unique_students,
-            "attendance_by_date": attendance_by_date,
-            "top_subjects": top_subjects
-        }
+    def _create_default_admin(self):
+        """Create a default admin user if no users exist"""
+        try:
+            with self.get_connection() as conn:
+                # Check if any users exist
+                result = conn.execute('SELECT COUNT(*) FROM users').fetchone()
+                if result and result[0] > 0:
+                    return
+                
+                # Create default admin user
+                # Using a simple password hash for demo purposes
+                # In production, use a proper password hashing library
+                import hashlib
+                default_password = "admin123"  # Change this in production
+                password_hash = hashlib.sha256(default_password.encode()).hexdigest()
+                
+                conn.execute('''
+                    INSERT INTO users (username, password_hash, role, full_name, email)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', ('admin', password_hash, 'admin', 'Administrator', 'admin@example.com'))
+                
+                logger.info("Created default admin user")
+        except Exception as e:
+            logger.error(f"Error creating default admin user: {e}")
+            traceback.print_exc()

@@ -218,7 +218,8 @@ class AttendanceController(BaseController):
             if not recognition_result:
                 raise RecognitionError("No face recognized in the image")
             
-            enrollment = recognition_result["enrollment"]
+            # Use student_id instead of enrollment
+            enrollment = recognition_result["student_id"]
             name = recognition_result["name"]
             confidence = recognition_result["confidence"]
             

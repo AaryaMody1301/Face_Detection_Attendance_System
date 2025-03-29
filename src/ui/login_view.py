@@ -1,323 +1,252 @@
 """
-Login View for the Face Detection Attendance System
+Login View for Face Detection Attendance System
 """
 import os
+import json
 import logging
-import tkinter as tk
-from tkinter import StringVar
+import hashlib
 import customtkinter as ctk
-from PIL import Image, ImageTk
+from PIL import Image
 
-from .base_view import BaseView
-from ..utils.exceptions import AuthenticationError, ValidationError
-from ..auth.auth_manager import AuthManager
+# Set up logging
+logger = logging.getLogger(__name__)
 
-class LoginView(BaseView):
-    """
-    Login view for user authentication
+class LoginView(ctk.CTkFrame):
+    """Login view for user authentication"""
     
-    Attributes:
-        auth: Authentication manager
-        on_login_success: Callback function for successful login
-        username_var: StringVar for username input
-        password_var: StringVar for password input
-        status_var: StringVar for status messages
-    """
-    
-    def __init__(self, master, auth_manager, on_login_success, **kwargs):
+    def __init__(self, master, on_login_success):
         """
-        Initialize login view
+        Initialize the login view
         
         Args:
             master: Parent widget
-            auth_manager: Authentication manager
             on_login_success: Callback function for successful login
-            **kwargs: Additional arguments for BaseView
         """
-        # Initialize base view
-        super().__init__(master, **kwargs)
+        super().__init__(master)
         
-        # Store references
-        self.auth = auth_manager
+        # Save callback
         self.on_login_success = on_login_success
         
-        # Initialize variables
-        self.username_var = StringVar()
-        self.password_var = StringVar()
-        self.status_var = StringVar()
+        # Load users
+        self.users = self._load_users()
         
-        # Set up UI
-        self.setup_ui()
+        # Create UI elements
+        self._setup_ui()
+        
+        logger.info("Login view initialized")
     
-    def setup_ui(self):
-        """Set up login UI"""
-        # Configure grid
-        self.columnconfigure(0, weight=1)
-        self.rowconfigure(0, weight=1)
+    def _setup_ui(self):
+        """Set up the login UI"""
+        # Configure grid layout (3 rows, 1 column)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=0)
+        self.grid_rowconfigure(2, weight=1)
         
-        # Main frame
-        main_frame = ctk.CTkFrame(self)
-        main_frame.grid(row=0, column=0, sticky="nsew")
+        # Load and display logo if available
+        self.logo_image = None
+        logo_path = os.path.join("assets", "icons", "app_icon.png")
         
-        # Configure main frame grid - two columns
-        main_frame.columnconfigure(0, weight=1)  # Left column (logo)
-        main_frame.columnconfigure(1, weight=1)  # Right column (form)
-        main_frame.rowconfigure(0, weight=1)
+        if os.path.exists(logo_path):
+            try:
+                logo_img = Image.open(logo_path)
+                logo_size = (150, 150)
+                self.logo_image = ctk.CTkImage(light_image=logo_img, 
+                                              dark_image=logo_img, 
+                                              size=logo_size)
+            except Exception as e:
+                logger.warning(f"Failed to load logo: {e}")
         
-        # Create left panel with logo
-        left_panel = self.create_logo_panel(main_frame)
-        left_panel.grid(row=0, column=0, sticky="nsew")
+        # Create login frame
+        self.login_frame = ctk.CTkFrame(self, corner_radius=10)
+        self.login_frame.grid(row=1, column=0, padx=20, pady=20, sticky="nsew")
+        self.login_frame.grid_columnconfigure(0, weight=1)
+        self.login_frame.grid_columnconfigure(1, weight=3)
         
-        # Create right panel with login form
-        right_panel = self.create_login_panel(main_frame)
-        right_panel.grid(row=0, column=1, sticky="nsew")
-    
-    def create_logo_panel(self, parent):
-        """
-        Create logo panel
+        # Add logo image or title
+        if self.logo_image:
+            self.logo_label = ctk.CTkLabel(self.login_frame, image=self.logo_image, text="")
+            self.logo_label.grid(row=0, column=0, columnspan=2, padx=20, pady=(20, 10))
         
-        Args:
-            parent: Parent widget
-            
-        Returns:
-            Logo panel frame
-        """
-        # Create frame
-        logo_frame = ctk.CTkFrame(parent, corner_radius=0)
-        logo_frame.columnconfigure(0, weight=1)
-        logo_frame.rowconfigure(0, weight=1)
-        
-        # Create inner frame for logo and content
-        content_frame = ctk.CTkFrame(logo_frame, fg_color="transparent")
-        content_frame.grid(row=0, column=0)
-        
-        # Try to load logo image
-        try:
-            # Logo image (with fallback text if image not found)
-            logo_path = os.path.join("assets", "icons", "app_icon.png")
-            
-            if os.path.exists(logo_path):
-                logo_image = ctk.CTkImage(
-                    light_image=Image.open(logo_path),
-                    dark_image=Image.open(logo_path),
-                    size=(200, 200)
-                )
-                logo_label = ctk.CTkLabel(content_frame, image=logo_image, text="")
-                logo_label.pack(pady=(40, 20))
-            else:
-                logo_label = ctk.CTkLabel(
-                    content_frame,
-                    text="FACE RECOGNITION\nATTENDANCE SYSTEM",
-                    font=ctk.CTkFont(size=24, weight="bold"),
-                    text_color=("gray10", "gray90")
-                )
-                logo_label.pack(pady=(40, 20))
-        except Exception as e:
-            # Fallback if image loading fails
-            self.logger.error(f"Failed to load logo: {e}")
-            logo_label = ctk.CTkLabel(
-                content_frame,
-                text="FACE RECOGNITION\nATTENDANCE SYSTEM",
-                font=ctk.CTkFont(size=24, weight="bold"),
-                text_color=("gray10", "gray90")
-            )
-            logo_label.pack(pady=(40, 20))
-        
-        # App name 
-        app_name = ctk.CTkLabel(
-            content_frame,
-            text="Face Recognition\nAttendance System",
-            font=ctk.CTkFont(size=32, weight="bold")
+        # Title
+        self.title_label = ctk.CTkLabel(
+            self.login_frame, 
+            text="Face Detection Attendance System",
+            font=ctk.CTkFont(size=20, weight="bold")
         )
-        app_name.pack(pady=10)
+        self.title_label.grid(row=1, column=0, columnspan=2, padx=20, pady=(10, 20))
         
-        # Tagline
-        tagline = ctk.CTkLabel(
-            content_frame,
-            text="Modern, Secure, Efficient",
-            font=ctk.CTkFont(size=16)
-        )
-        tagline.pack(pady=5)
-        
-        return logo_frame
-    
-    def create_login_panel(self, parent):
-        """
-        Create login form panel
-        
-        Args:
-            parent: Parent widget
-            
-        Returns:
-            Login panel frame
-        """
-        # Create frame
-        login_frame = ctk.CTkFrame(parent)
-        
-        # Configure grid
-        login_frame.columnconfigure(0, weight=1)
-        login_frame.rowconfigure(0, weight=1)
-        login_frame.rowconfigure(1, weight=0)
-        
-        # Create content frame
-        content_frame = ctk.CTkFrame(login_frame, fg_color="transparent")
-        content_frame.grid(row=0, column=0, padx=40, pady=(80, 20), sticky="n")
-        
-        # Login header
-        header_label = ctk.CTkLabel(
-            content_frame,
-            text="Login to Your Account",
-            font=ctk.CTkFont(size=24, weight="bold")
-        )
-        header_label.pack(pady=(0, 20))
-        
-        # Username field
-        username_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
-        username_frame.pack(fill="x", pady=10)
-        
-        username_label = ctk.CTkLabel(
-            username_frame,
-            text="Username",
+        # Username
+        self.username_label = ctk.CTkLabel(
+            self.login_frame,
+            text="Username:",
+            anchor="w",
             font=ctk.CTkFont(size=14)
         )
-        username_label.pack(anchor="w")
+        self.username_label.grid(row=2, column=0, padx=(20, 5), pady=(10, 10), sticky="w")
         
-        username_entry = ctk.CTkEntry(
-            username_frame,
-            textvariable=self.username_var,
+        self.username_entry = ctk.CTkEntry(
+            self.login_frame,
             placeholder_text="Enter your username",
-            width=300,
-            height=40,
             font=ctk.CTkFont(size=14)
         )
-        username_entry.pack(fill="x", pady=(5, 0))
+        self.username_entry.grid(row=2, column=1, padx=(5, 20), pady=(10, 10), sticky="ew")
         
-        # Password field
-        password_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
-        password_frame.pack(fill="x", pady=10)
-        
-        password_label = ctk.CTkLabel(
-            password_frame,
-            text="Password",
+        # Password
+        self.password_label = ctk.CTkLabel(
+            self.login_frame,
+            text="Password:",
+            anchor="w",
             font=ctk.CTkFont(size=14)
         )
-        password_label.pack(anchor="w")
+        self.password_label.grid(row=3, column=0, padx=(20, 5), pady=(10, 10), sticky="w")
         
-        password_entry = ctk.CTkEntry(
-            password_frame,
-            textvariable=self.password_var,
+        self.password_entry = ctk.CTkEntry(
+            self.login_frame,
             placeholder_text="Enter your password",
-            width=300,
-            height=40,
-            font=ctk.CTkFont(size=14),
-            show="•"
+            show="•",
+            font=ctk.CTkFont(size=14)
         )
-        password_entry.pack(fill="x", pady=(5, 0))
+        self.password_entry.grid(row=3, column=1, padx=(5, 20), pady=(10, 10), sticky="ew")
         
         # Login button
-        login_button = ctk.CTkButton(
-            content_frame,
+        self.login_button = ctk.CTkButton(
+            self.login_frame,
             text="Login",
-            command=self.handle_login,
-            font=ctk.CTkFont(size=16),
-            height=40,
-            width=300
+            command=self._on_login,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            height=40
         )
-        login_button.pack(pady=20)
-        
-        # Bind Enter key to login button
-        username_entry.bind("<Return>", lambda event: self.handle_login())
-        password_entry.bind("<Return>", lambda event: self.handle_login())
+        self.login_button.grid(row=4, column=0, columnspan=2, padx=20, pady=(20, 10), sticky="ew")
         
         # Status message
-        status_label = ctk.CTkLabel(
-            content_frame,
-            textvariable=self.status_var,
-            text_color=("red", "red"),
+        self.status_label = ctk.CTkLabel(
+            self.login_frame,
+            text="",
+            text_color="red",
             font=ctk.CTkFont(size=12)
         )
-        status_label.pack(pady=10)
+        self.status_label.grid(row=5, column=0, columnspan=2, padx=20, pady=(5, 20), sticky="ew")
         
-        # Footer with additional info
-        footer_frame = ctk.CTkFrame(login_frame, fg_color="transparent")
-        footer_frame.grid(row=1, column=0, padx=40, pady=20, sticky="ew")
+        # Create default admin if no users exist
+        if not self.users:
+            self._create_default_admin()
         
-        footer_text = ctk.CTkLabel(
-            footer_frame,
-            text="Use admin/admin for administrator account",
-            font=ctk.CTkFont(size=12),
-            text_color=("gray40", "gray60")
-        )
-        footer_text.pack()
+        # Bind Enter key to login
+        self.username_entry.bind("<Return>", lambda event: self._on_login())
+        self.password_entry.bind("<Return>", lambda event: self._on_login())
         
-        return login_frame
+        # Focus username entry
+        self.username_entry.focus_set()
     
-    def handle_login(self):
-        """Handle login button press"""
-        # Clear status
-        self.status_var.set("")
-        
-        # Get username and password
-        username = self.username_var.get().strip()
-        password = self.password_var.get().strip()
-        
-        # Validate inputs
-        if not username:
-            self.status_var.set("Please enter a username")
-            return
-        
-        if not password:
-            self.status_var.set("Please enter a password")
-            return
-        
-        # Show loading animation
-        self.show_loading("Authenticating...")
-        
-        try:
-            # Perform authentication in a separate thread to keep UI responsive
-            self.after(100, lambda: self._perform_authentication(username, password))
-            
-        except Exception as e:
-            self.hide_loading()
-            self.status_var.set(f"Authentication error: {str(e)}")
-            self.logger.error(f"Login error: {e}")
-    
-    def _perform_authentication(self, username, password):
+    def _load_users(self):
         """
-        Perform authentication
+        Load users from credentials file
+        
+        Returns:
+            dict: Users dictionary
+        """
+        cred_path = os.path.join("config", "credentials.json")
+        
+        if os.path.exists(cred_path):
+            try:
+                with open(cred_path, 'r') as f:
+                    users = json.load(f)
+                logger.info("Loaded user credentials")
+                return users
+            except Exception as e:
+                logger.error(f"Error loading credentials: {e}")
+        
+        # Return empty dict if file doesn't exist or error occurred
+        return {}
+    
+    def _save_users(self, users=None):
+        """
+        Save users to credentials file
         
         Args:
-            username: Username
-            password: Password
+            users: Users dictionary to save (default: self.users)
         """
+        if users is None:
+            users = self.users
+            
+        cred_path = os.path.join("config", "credentials.json")
+        
         try:
-            # Authenticate user
-            user = self.auth.authenticate(username, password)
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(cred_path), exist_ok=True)
             
-            # Hide loading animation
-            self.hide_loading()
+            # Write to file
+            with open(cred_path, 'w') as f:
+                json.dump(users, f, indent=4)
             
-            if user:
-                # Authentication successful
-                self.logger.info(f"User {username} authenticated successfully")
-                
-                # Call success callback
-                self.on_login_success(user)
-            else:
-                # Authentication failed
-                self.status_var.set("Invalid username or password")
-                
-        except AuthenticationError as e:
-            self.hide_loading()
-            self.status_var.set(str(e))
-            self.logger.warning(f"Authentication failed: {e}")
-            
+            logger.info("Saved user credentials")
         except Exception as e:
-            self.hide_loading()
-            self.status_var.set("Authentication error")
-            self.logger.error(f"Login error: {e}")
+            logger.error(f"Error saving credentials: {e}")
     
-    def on_close(self):
-        """Clean up resources when view is closed"""
-        super().on_close()
-        # Additional cleanup if needed
+    def _create_default_admin(self):
+        """Create default admin account if no users exist"""
+        admin = {
+            "username": "admin",
+            "password": self._hash_password("admin"),
+            "name": "Administrator",
+            "role": "Admin"
+        }
+        
+        self.users = {"admin": admin}
+        self._save_users()
+        
+        logger.info("Created default admin account")
+        self.status_label.configure(
+            text="Default admin account created (Username: admin, Password: admin)",
+            text_color="blue"
+        )
+    
+    def _hash_password(self, password):
+        """
+        Hash password using SHA-256
+        
+        Args:
+            password: Plain text password
+            
+        Returns:
+            str: Hashed password
+        """
+        return hashlib.sha256(password.encode()).hexdigest()
+    
+    def _on_login(self):
+        """Handle login button click"""
+        # Get entered username and password
+        username = self.username_entry.get().strip()
+        password = self.password_entry.get().strip()
+        
+        # Validate inputs
+        if not username or not password:
+            self.status_label.configure(text="Please enter both username and password")
+            return
+        
+        # Check if user exists
+        if username not in self.users:
+            self.status_label.configure(text="Invalid username or password")
+            return
+        
+        # Verify password
+        user = self.users[username]
+        hashed_password = self._hash_password(password)
+        
+        if hashed_password != user["password"]:
+            self.status_label.configure(text="Invalid username or password")
+            return
+        
+        # Login successful
+        logger.info(f"User {username} logged in successfully")
+        
+        # Prepare user data for callback
+        user_data = {
+            "username": username,
+            "name": user["name"],
+            "role": user["role"]
+        }
+        
+        # Call success callback
+        self.on_login_success(user_data)

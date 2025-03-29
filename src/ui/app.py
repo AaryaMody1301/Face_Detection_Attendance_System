@@ -12,6 +12,7 @@ import time
 import threading
 import logging
 import pandas as pd
+import csv
 import customtkinter as ctk  # Import CustomTkinter
 
 from src.face_recognition.detector import FaceDetector
@@ -22,6 +23,7 @@ from src.utils.attendance_analytics import AttendanceAnalytics
 from src.ui.analytics_dashboard import AnalyticsDashboard
 from src.utils.cloud_sync import CloudSync  # Import CloudSync
 from src.utils.camera_manager import CameraManager  # Import CameraManager
+from src.ui.settings import SettingsPage  # Import the settings page
 
 # Set up logging
 logging.basicConfig(
@@ -133,7 +135,6 @@ class FaceAttendanceApp:
         """Organize the TrainingImage and Attendance folders"""
         try:
             from src.utils.organize_folders import organize_training_images, organize_attendance_records
-            
             # Show info message
             messagebox.showinfo("Organizing Folders", 
                               "The system will now organize your training images and attendance records.\n"
@@ -231,8 +232,31 @@ that automates the process of marking attendance.
                               bg="grey80", fg="black", font=('times', 30, ' bold '))
         title_label.pack(pady=20)
         
+        # Add a tabbed interface for better navigation
+        self.tab_view = ctk.CTkTabview(self.root)
+        self.tab_view.pack(fill="both", expand=True, padx=20, pady=20)
+
+        # Add tabs for different sections
+        self.attendance_tab = self.tab_view.add("Attendance")
+        self.settings_tab = self.tab_view.add("Settings")
+        self.analytics_tab = self.tab_view.add("Analytics")
+
+        # Set up the attendance tab
+        self.setup_attendance_tab(self.attendance_tab)
+
+        # Set up the settings tab
+        self.settings_page = SettingsPage(self.settings_tab)
+        self.settings_page.pack(fill="both", expand=True)
+
+        # Set up the analytics tab
+        self.analytics_dashboard = AnalyticsDashboard(self.analytics_tab)
+        self.analytics_dashboard.pack(fill="both", expand=True)
+
+    def setup_attendance_tab(self, parent):
+        """Set up the attendance tab"""
+        # Move existing attendance-related UI setup here
         # Main frame
-        self.main_frame = tk.Frame(self.root, bg="grey80")
+        self.main_frame = tk.Frame(parent, bg="grey80")
         self.main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
         
         # Left frame (for video and controls)
@@ -366,7 +390,13 @@ that automates the process of marking attendance.
         init_label = tk.Label(self.video_frame, text=init_text, bg="black", fg="white",
                             font=('times', 14))
         init_label.pack(expand=True)
-    
+
+    def setup_analytics_tab(self, parent):
+        """Set up the analytics tab"""
+        # Integrate the analytics dashboard
+        self.analytics_dashboard = AnalyticsDashboard(parent)
+        self.analytics_dashboard.pack(fill="both", expand=True)
+
     def set_subject(self, subject):
         """Set the subject entry field with the provided subject"""
         self.subject_entry.delete(0, tk.END)
@@ -436,7 +466,6 @@ that automates the process of marking attendance.
             
             delay_between_captures = 0.5  # seconds
             last_capture_time = time.time() - delay_between_captures  # allow immediate first capture
-            
             while self.is_capturing and count < sample_num:
                 try:
                     ret, img = self.cam.read()
@@ -797,35 +826,31 @@ that automates the process of marking attendance.
         
         # Add export button
         export_btn = tk.Button(header_frame, text="Export to CSV", 
-                             command=lambda: self.export_attendance(attendance_records),
-                             bg="#4CAF50", fg="white", font=('times', 12))
+                             command=lambda: self.export_attendance(attendance_records))
         export_btn.pack(side=tk.RIGHT, padx=10)
         
-        # Create a frame for the main content
-        content_frame = tk.Frame(attendance_window, bg="grey90")
-        content_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # Create a frame for file list
+        list_frame = tk.Frame(attendance_window, bg="grey90")
+        list_frame.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10)
         
-        # Create a frame for the list of files with scrollbar
-        files_frame = tk.Frame(content_frame, bg="white", bd=1, relief=tk.GROOVE)
-        files_frame.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10, anchor=tk.N)
+        # Add a label
+        tk.Label(list_frame, text="Attendance Files:", 
+               font=('times', 12, 'bold'), bg="grey90").pack(anchor=tk.W, pady=5)
         
-        tk.Label(files_frame, text="Attendance Files:", bg="grey80", 
-               font=('times', 12, 'bold'), width=40).pack(fill=tk.X)
+        # Create a listbox for files with scrollbar
+        list_scrollbar = tk.Scrollbar(list_frame)
+        list_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
-        # Add a scrollbar to the listbox
-        list_scroll = tk.Scrollbar(files_frame)
-        list_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        files_listbox = tk.Listbox(list_frame, yscrollcommand=list_scrollbar.set, 
+                                 width=30, font=('times', 11))
+        files_listbox.pack(side=tk.LEFT, fill=tk.Y, expand=True)
+        list_scrollbar.config(command=files_listbox.yview)
         
-        files_listbox = tk.Listbox(files_frame, width=40, height=20, 
-                                 yscrollcommand=list_scroll.set, font=('times', 11))
-        files_listbox.pack(fill=tk.BOTH, expand=True)
-        list_scroll.config(command=files_listbox.yview)
-        
-        # Create a frame for the attendance data with scrollbars
-        data_container = tk.Frame(content_frame, bg="white", bd=1, relief=tk.GROOVE)
+        # Create a container for the data view
+        data_container = tk.Frame(attendance_window, bg="grey90")
         data_container.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        # Scrollbars for the data frame
+        # Scrollbars for the data view
         h_scroll = tk.Scrollbar(data_container, orient=tk.HORIZONTAL)
         h_scroll.pack(side=tk.BOTTOM, fill=tk.X)
         
@@ -1120,7 +1145,7 @@ that automates the process of marking attendance.
                             # Try to get the same camera again
                             camera_result = self.camera_manager.get_camera(self.camera_id)
                             
-                            if (camera_result.success):
+                            if camera_result.success:
                                 logger.info(f"Successfully recovered camera connection to camera {self.camera_id}")
                                 self.cam = camera_result.camera
                             else:
@@ -1149,7 +1174,6 @@ that automates the process of marking attendance.
                 
                 # Pause to avoid using too much CPU
                 time.sleep(0.03)  # ~30 FPS
-                
         except Exception as e:
             logger.exception(f"Error in update frame thread: {e}")
             self.is_capturing = False

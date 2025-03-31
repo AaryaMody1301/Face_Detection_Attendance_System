@@ -10,7 +10,7 @@ import customtkinter as ctk
 from PIL import Image, ImageTk
 
 from .modern_app import ModernAttendanceApp
-from ..auth.auth_system import AuthenticationSystem
+from ..auth.simple_auth import SimpleAuth
 from ..utils.credentials_manager import CredentialsManager
 
 # Configure logging
@@ -29,8 +29,11 @@ class LoginWindow(ctk.CTk):
     def __init__(self):
         super().__init__()
         
+        # Initialize after_ids list to track callbacks
+        self.after_ids = []
+        
         # Initialize authentication system
-        self.auth_system = AuthenticationSystem()
+        self.auth_system = SimpleAuth()
         
         # Initialize credentials manager
         self.credentials_manager = CredentialsManager()
@@ -264,10 +267,16 @@ class LoginWindow(ctk.CTk):
     
     def display_error(self, message):
         """Display error message"""
-        self.error_label.configure(text=message)
-        
-        # Clear error after 5 seconds
-        self.after(5000, lambda: self.error_label.configure(text=""))
+        if hasattr(self, 'error_label') and self.error_label.winfo_exists():
+            self.error_label.configure(text=message)
+            
+            # Clear error after 5 seconds - with safety check
+            self.after(5000, lambda: self._safe_clear_error())
+    
+    def _safe_clear_error(self):
+        """Safely clear error message with existence check"""
+        if hasattr(self, 'error_label') and self.error_label.winfo_exists():
+            self.error_label.configure(text="")
     
     def login(self):
         """Attempt to log in with provided credentials"""
@@ -294,20 +303,22 @@ class LoginWindow(ctk.CTk):
         """Perform authentication in a separate thread"""
         try:
             # Attempt to authenticate
-            user_info = self.auth_system.authenticate(username, password)
+            success = self.auth_system.login(username, password)
             
             # Process result on the main thread
-            self.after(0, lambda: self._process_auth_result(user_info, username, password))
+            if self.winfo_exists():
+                self.after(0, lambda: self._process_auth_result(success, username, password))
         except Exception as e:
             logger.error(f"Authentication error: {e}")
-            self.after(0, lambda: self._handle_auth_error(str(e)))
+            if self.winfo_exists():
+                self.after(0, lambda: self._handle_auth_error(str(e)))
     
-    def _process_auth_result(self, user_info, username, password):
+    def _process_auth_result(self, success, username, password):
         """Process authentication result"""
         # Hide loading overlay
         self.show_loading(False)
         
-        if user_info:
+        if success:
             # Authentication successful
             
             # Save credentials if "Remember me" is checked
@@ -400,6 +411,27 @@ class LoginWindow(ctk.CTk):
             except Exception as e:
                 logger.error(f"Password reset error: {e}")
                 messagebox.showerror("Error", f"Failed to reset password: {e}")
+    
+    def after(self, ms, func=None, *args):
+        """Override after to track IDs for cleanup"""
+        if func is not None:
+            after_id = super().after(ms, func, *args)
+            self.after_ids.append(after_id)
+            return after_id
+        return super().after(ms)
+    
+    def cleanup(self):
+        """Clean up resources before closing"""
+        # Cancel any pending after calls
+        if hasattr(self, 'after_ids'):
+            for after_id in self.after_ids:
+                try:
+                    self.after_cancel(after_id)
+                except Exception as e:
+                    logger.error(f"Error canceling after ID {after_id}: {e}")
+            # Clear the list
+            self.after_ids = []
+        return True
 
 def main():
     """Main entry point for the login window"""

@@ -49,6 +49,9 @@ class BaseView(ctk.CTkFrame):
         self.width = width
         self.height = height
         
+        # Track after IDs for cleanup
+        self.after_ids = []
+        
         # Loading overlay
         self._loading_overlay = None
         self._loading_label = None
@@ -203,8 +206,9 @@ class BaseView(ctk.CTkFrame):
         next_index = (spinner_chars.index(current_text) + 1) % len(spinner_chars)
         self._loading_spinner.configure(text=spinner_chars[next_index])
         
-        # Schedule next animation frame
-        self.after(250, self._animate_spinner)
+        # Schedule next animation frame if widget still exists
+        if self.winfo_exists() and hasattr(self, '_loading_spinner') and self._loading_spinner.winfo_exists():
+            self.after(250, self._animate_spinner)
     
     def refresh(self):
         """
@@ -220,8 +224,21 @@ class BaseView(ctk.CTkFrame):
         
         Override in subclasses to perform cleanup when view is closed.
         """
-        # Default implementation - nothing to clean up
-        pass
+        # Cancel any pending after calls
+        if hasattr(self, 'after_ids'):
+            for after_id in self.after_ids:
+                try:
+                    self.after_cancel(after_id)
+                except Exception as e:
+                    logger.error(f"Error canceling after ID {after_id}: {e}")
+            # Clear the list
+            self.after_ids = []
+            
+        # Hide loading overlay if showing
+        self.hide_loading()
+        
+        # Default implementation - nothing else to clean up
+        return True
 
     def create_scrollable_frame(self, master=None, **kwargs):
         """
@@ -340,3 +357,11 @@ class BaseView(ctk.CTkFrame):
             "label": label,
             "field": field
         }
+
+    def after(self, ms, func=None, *args):
+        """Override after to track IDs for cleanup"""
+        if func is not None:
+            after_id = super().after(ms, func, *args)
+            self.after_ids.append(after_id)
+            return after_id
+        return super().after(ms)

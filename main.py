@@ -3,7 +3,7 @@
 Face Detection Attendance System - Main Entry Point
 
 This module serves as the entry point for the Face Detection Attendance System,
-initializing and starting the main application.
+initializing and starting the main application with a choice of UI.
 """
 import sys
 import os
@@ -14,6 +14,7 @@ import customtkinter as ctk
 import cv2
 import threading
 import time
+import json
 from pathlib import Path
 
 # Configure logging
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 os.makedirs(os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs"), exist_ok=True)
 
 # Create other necessary directories
-REQUIRED_DIRS = ["TrainingImage", "TrainingImageLabel", "Attendance", "Data", "StudentDetails", "backups"]
+REQUIRED_DIRS = ["TrainingImage", "TrainingImageLabel", "Attendance", "Data", "StudentDetails", "backups", "config"]
 for directory in REQUIRED_DIRS:
     os.makedirs(directory, exist_ok=True)
 
@@ -165,26 +166,33 @@ def main():
             logger.error("Required dependencies are missing or incompatible")
             return 1
         
-        # Import the application
-        try:
-            from src.app import Application
-        except ImportError as e:
-            logger.error(f"Failed to import application: {e}")
-            logger.error(f"Python path: {sys.path}")
-            traceback.print_exc()
-            return 1
-        
-        logger.info("Starting Face Detection Attendance System")
-        
         # Check for models directory and required face detection models
         models_dir = os.path.join(base_dir, "models")
         if not os.path.exists(models_dir):
             os.makedirs(models_dir, exist_ok=True)
             logger.info("Created models directory")
         
-        # Create and start the application
-        app = Application()
-        app.start()
+        # Show UI selector to let user choose which UI to use
+        from src.ui.ui_selector import select_ui
+        ui_type = select_ui()
+        
+        logger.info(f"Selected UI type: {ui_type}")
+        
+        # Start the appropriate UI
+        if ui_type.lower() == "modern":
+            try:
+                # Import modern UI
+                from src.ui.modern_launcher import launch_modern_ui
+                launch_modern_ui()
+            except ImportError as e:
+                logger.error(f"Failed to import modern UI: {e}")
+                # Fall back to classic UI
+                from src.ui.classic_launcher import launch_classic_ui
+                launch_classic_ui()
+        else:
+            # Use classic UI
+            from src.ui.classic_launcher import launch_classic_ui
+            launch_classic_ui()
         
     except KeyboardInterrupt:
         logger.info("Application terminated by user")

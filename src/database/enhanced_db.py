@@ -1,566 +1,580 @@
 """
-Enhanced database handler with connection pooling and optimized queries
+Enhanced Database Handler for Face Detection Attendance System
+
+This module provides a robust SQLite database interface for the attendance system.
 """
 import os
 import sqlite3
+import pandas as pd
 import logging
-import threading
-import time
+import csv
 import datetime
-from typing import Dict, List, Any, Optional, Tuple
-from queue import Queue, Empty
+import shutil
+from pathlib import Path
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class EnhancedDB:
     """
-    Enhanced database handler with connection pooling and optimized queries
+    Enhanced SQLite database handler for Face Detection Attendance System
+    
+    Provides functions to manage students, attendance records, and subjects
     """
     
-    def __init__(self, db_path=None, pool_size=5):
+    def __init__(self, db_path="Data/attendance.db"):
         """
-        Initialize the database handler with connection pooling
+        Initialize the database handler
         
         Args:
-            db_path (str, optional): Path to the database file
-            pool_size (int): Size of the connection pool
+            db_path (str): Path to SQLite database file
         """
-        if db_path is None:
-            db_path = os.path.join("Data", "attendance.db")
+        # Ensure directories exist
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
         
         self.db_path = db_path
-        self.pool_size = pool_size
+        self.connection = None
+        self.cursor = None
         
-        # Connection pool
-        self.connection_pool = Queue(maxsize=pool_size)
-        self.active_connections = 0
-        self.pool_lock = threading.Lock()
-        
-        # Connection management
-        self.initialize_db()
-        self.fill_pool()
-        
-        # Query cache
-        self.query_cache = {}
-        self.cache_lock = threading.Lock()
-        self.cache_expiry = {}
-        self.cache_ttl = 60  # 1 minute in seconds
+        # Initialize the database
+        self._connect()
+        self._create_tables()
     
-    def initialize_db(self):
-        """Initialize the database with required tables if they don't exist"""
+    def _connect(self):
+        """Establish connection to the database"""
         try:
-            # Create Data directory if it doesn't exist
-            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-            
-            # Connect to database
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
+            self.connection = sqlite3.connect(self.db_path)
+            self.connection.row_factory = sqlite3.Row  # Return rows as dictionaries
+            self.cursor = self.connection.cursor()
+            logger.info(f"Connected to database: {self.db_path}")
+        except sqlite3.Error as e:
+            logger.error(f"Database connection error: {e}")
+            raise
+    
+    def _create_tables(self):
+        """Create necessary tables if they don't exist"""
+        try:
             # Create students table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS Students (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    enrollment TEXT UNIQUE,
-                    name TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
+            self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS students (
+                enrollment TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
             ''')
             
             # Create attendance table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS Attendance (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    enrollment TEXT,
-                    name TEXT,
-                    subject TEXT,
-                    date TEXT,
-                    time TEXT,
-                    confidence REAL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(enrollment, subject, date) ON CONFLICT REPLACE
-                )
+            self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS attendance (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                enrollment TEXT,
+                name TEXT,
+                subject TEXT,
+                date TEXT,
+                time TEXT,
+                file_path TEXT,
+                FOREIGN KEY (enrollment) REFERENCES students(enrollment)
+            )
             ''')
             
-            # Create attendance_sessions table for tracking sessions
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS AttendanceSessions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    subject TEXT,
-                    date TEXT,
-                    time TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
+            # Create subjects table
+            self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS subjects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL
+            )
             ''')
             
-            # Create index for faster queries
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_attendance_date ON Attendance(date)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_attendance_subject ON Attendance(subject)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_attendance_enrollment ON Attendance(enrollment)')
+            # Add default subjects if there aren't any
+            self.cursor.execute('SELECT COUNT(*) FROM subjects')
+            count = self.cursor.fetchone()[0]
             
-            conn.commit()
-            conn.close()
+            if count == 0:
+                default_subjects = [
+                    ("Python",),
+                    ("Java",),
+                    ("Web Dev",),
+                    ("Data Science",)
+                ]
+                self.cursor.executemany(
+                    'INSERT INTO subjects (name) VALUES (?)',
+                    default_subjects
+                )
             
-            logger.info("Database initialized successfully")
-            
-        except Exception as e:
-            logger.error(f"Error initializing database: {e}")
-    
-    def fill_pool(self):
-        """Fill the connection pool with database connections"""
-        with self.pool_lock:
-            while not self.connection_pool.full() and self.active_connections < self.pool_size:
-                try:
-                    # Create a new connection
-                    conn = sqlite3.connect(self.db_path, check_same_thread=False)
-                    
-                    # Enable foreign keys
-                    cursor = conn.cursor()
-                    cursor.execute('PRAGMA foreign_keys = ON')
-                    conn.commit()
-                    
-                    # Add to pool
-                    self.connection_pool.put(conn)
-                    self.active_connections += 1
-                    
-                except Exception as e:
-                    logger.error(f"Error creating database connection: {e}")
-                    break
-    
-    def get_connection(self):
-        """
-        Get a connection from the pool
-        
-        Returns:
-            sqlite3.Connection: Database connection
-        """
-        try:
-            # Try to get connection from pool
-            conn = self.connection_pool.get(block=True, timeout=5)
-            return conn
-        except Empty:
-            # Create a new connection if pool is empty
-            with self.pool_lock:
-                if self.active_connections < self.pool_size:
-                    try:
-                        # Create a new connection
-                        conn = sqlite3.connect(self.db_path, check_same_thread=False)
-                        
-                        # Enable foreign keys
-                        cursor = conn.cursor()
-                        cursor.execute('PRAGMA foreign_keys = ON')
-                        conn.commit()
-                        
-                        self.active_connections += 1
-                        return conn
-                    except Exception as e:
-                        logger.error(f"Error creating database connection: {e}")
-                        raise
-                else:
-                    # Wait for a connection
-                    conn = self.connection_pool.get(block=True)
-                    return conn
-    
-    def release_connection(self, conn):
-        """
-        Release a connection back to the pool
-        
-        Args:
-            conn (sqlite3.Connection): Database connection
-        """
-        try:
-            # Return connection to pool
-            self.connection_pool.put(conn, block=False)
-        except:
-            # Close connection if pool is full
-            conn.close()
-            with self.pool_lock:
-                self.active_connections -= 1
-    
-    def execute_query(self, query, params=(), fetch_all=False, fetch_one=False, commit=False):
-        """
-        Execute a database query with connection pooling
-        
-        Args:
-            query (str): SQL query
-            params (tuple): Query parameters
-            fetch_all (bool): Whether to return all results
-            fetch_one (bool): Whether to return one result
-            commit (bool): Whether to commit the transaction
-            
-        Returns:
-            Any: Query results if fetch_all or fetch_one, else None
-        """
-        conn = None
-        try:
-            # Get a connection from the pool
-            conn = self.get_connection()
-            
-            # Execute query
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            
-            # Get results
-            result = None
-            if fetch_all:
-                result = cursor.fetchall()
-            elif fetch_one:
-                result = cursor.fetchone()
-            
-            # Commit if needed
-            if commit:
-                conn.commit()
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Database error: {e}")
-            if conn:
-                conn.rollback()
+            # Commit changes
+            self.connection.commit()
+            logger.info("Database tables initialized")
+        except sqlite3.Error as e:
+            logger.error(f"Error creating tables: {e}")
             raise
-        finally:
-            # Return connection to pool
-            if conn:
-                self.release_connection(conn)
     
-    def create_attendance_record(self, subject, date, time):
+    def close(self):
+        """Close database connection"""
+        if self.connection:
+            self.connection.close()
+            self.connection = None
+            self.cursor = None
+            logger.info("Database connection closed")
+    
+    def __del__(self):
+        """Destructor to ensure connection is closed"""
+        self.close()
+    
+    def add_student(self, enrollment, name):
         """
-        Create a new attendance session record
+        Add a new student
         
         Args:
-            subject (str): Subject name
-            date (str): Date in YYYY-MM-DD format
-            time (str): Time in HH:MM:SS format
+            enrollment (str): Student enrollment ID
+            name (str): Student name
             
         Returns:
-            int: Session ID or None on failure
+            bool: True if successful, False if the student already exists
         """
         try:
-            # Insert record
-            query = '''
-                INSERT INTO AttendanceSessions (subject, date, time)
-                VALUES (?, ?, ?)
-            '''
+            # Check if student already exists
+            self.cursor.execute(
+                'SELECT * FROM students WHERE enrollment = ?',
+                (enrollment,)
+            )
+            if self.cursor.fetchone():
+                # Student already exists, update if name is different
+                self.cursor.execute(
+                    'SELECT name FROM students WHERE enrollment = ?',
+                    (enrollment,)
+                )
+                current_name = self.cursor.fetchone()[0]
+                
+                if current_name != name:
+                    # Update the student's name
+                    self.cursor.execute(
+                        'UPDATE students SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE enrollment = ?',
+                        (name, enrollment)
+                    )
+                    self.connection.commit()
+                    logger.info(f"Updated student: {enrollment} - {name}")
+                return True  # Student exists, consider it a success
             
-            # Execute query
-            self.execute_query(query, (subject, date, time), commit=True)
+            # Add new student
+            self.cursor.execute(
+                'INSERT INTO students (enrollment, name) VALUES (?, ?)',
+                (enrollment, name)
+            )
+            self.connection.commit()
+            logger.info(f"Added new student: {enrollment} - {name}")
             
-            # Get session ID
-            query = '''
-                SELECT id FROM AttendanceSessions
-                WHERE subject = ? AND date = ? AND time = ?
-                ORDER BY id DESC LIMIT 1
-            '''
+            # Import to CSV as well for backwards compatibility
+            self._update_student_csv(enrollment, name)
             
-            # Execute query
-            result = self.execute_query(query, (subject, date, time), fetch_one=True)
-            
-            if result:
-                return result[0]
-            return None
-        
-        except Exception as e:
-            logger.error(f"Error creating attendance record: {e}")
-            return None
+            return True
+        except sqlite3.Error as e:
+            logger.error(f"Error adding student: {e}")
+            return False
     
-    def mark_attendance(self, enrollment, name, subject, date, time, confidence=1.0):
+    def _update_student_csv(self, enrollment, name):
+        """
+        Update the StudentDetails.csv file for backwards compatibility
+        
+        Args:
+            enrollment (str): Student enrollment ID
+            name (str): Student name
+        """
+        try:
+            # Create directory if it doesn't exist
+            os.makedirs("StudentDetails", exist_ok=True)
+            
+            csv_path = os.path.join("StudentDetails", "StudentDetails.csv")
+            
+            # Check if file exists
+            file_exists = os.path.isfile(csv_path)
+            
+            # Read existing data if file exists
+            existing_data = []
+            if file_exists:
+                with open(csv_path, 'r', newline='') as f:
+                    reader = csv.reader(f)
+                    existing_data = list(reader)
+                
+                # Check header row
+                if not existing_data:
+                    existing_data.append(["Enrollment", "Name"])
+                elif existing_data[0] != ["Enrollment", "Name"]:
+                    # Fix header if it's incorrect
+                    existing_data[0] = ["Enrollment", "Name"]
+                
+                # Check if student already exists
+                for i, row in enumerate(existing_data):
+                    if i > 0 and len(row) >= 2 and row[0] == enrollment:
+                        # Update name if different
+                        if row[1] != name:
+                            existing_data[i][1] = name
+                        # Student found, no need to add
+                        break
+                else:
+                    # Student not found, add them
+                    existing_data.append([enrollment, name])
+            else:
+                # Create new file with header and student
+                existing_data = [["Enrollment", "Name"], [enrollment, name]]
+            
+            # Write back to file
+            with open(csv_path, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerows(existing_data)
+                
+            logger.info(f"Updated StudentDetails.csv with student: {enrollment} - {name}")
+        except Exception as e:
+            logger.error(f"Error updating StudentDetails.csv: {e}")
+            # Don't raise - this is just for backwards compatibility
+    
+    def get_student_details(self, enrollment=None):
+        """
+        Get student details
+        
+        Args:
+            enrollment (str, optional): Student enrollment ID. If None, returns all students
+            
+        Returns:
+            pandas.DataFrame: Student details
+        """
+        try:
+            if enrollment:
+                # Get specific student
+                self.cursor.execute(
+                    'SELECT * FROM students WHERE enrollment = ?',
+                    (enrollment,)
+                )
+            else:
+                # Get all students
+                self.cursor.execute('SELECT * FROM students')
+            
+            # Get column names
+            columns = [desc[0] for desc in self.cursor.description]
+            
+            # Fetch all rows
+            rows = self.cursor.fetchall()
+            
+            # Convert to DataFrame
+            df = pd.DataFrame([dict(row) for row in rows])
+            
+            # If DataFrame is empty, return an empty DataFrame with the right columns
+            if df.empty:
+                return pd.DataFrame(columns=columns)
+            
+            return df
+        except sqlite3.Error as e:
+            logger.error(f"Error getting student details: {e}")
+            # Return an empty DataFrame
+            return pd.DataFrame()
+    
+    def mark_attendance(self, enrollment, name, subject=None, date=None, time_str=None, file_path=None):
         """
         Mark attendance for a student
         
         Args:
             enrollment (str): Student enrollment ID
             name (str): Student name
-            subject (str): Subject name
-            date (str): Date in YYYY-MM-DD format
-            time (str): Time in HH:MM:SS format
-            confidence (float): Recognition confidence score
+            subject (str, optional): Subject name
+            date (str, optional): Date string (YYYY-MM-DD). If None, uses current date
+            time_str (str, optional): Time string (HH:MM:SS). If None, uses current time
+            file_path (str, optional): Path to attendance CSV file
             
         Returns:
             bool: True if successful, False otherwise
         """
         try:
-            # Ensure student exists in Students table
-            query = '''
-                INSERT OR IGNORE INTO Students (enrollment, name)
-                VALUES (?, ?)
-            '''
+            # Get current date and time if not provided
+            now = datetime.datetime.now()
+            if not date:
+                date = now.strftime("%Y-%m-%d")
+            if not time_str:
+                time_str = now.strftime("%H:%M:%S")
             
-            # Execute query
-            self.execute_query(query, (enrollment, name), commit=True)
+            if not subject:
+                subject = "General"
             
-            # Insert attendance record
-            query = '''
-                INSERT OR REPLACE INTO Attendance 
-                (enrollment, name, subject, date, time, confidence)
-                VALUES (?, ?, ?, ?, ?, ?)
-            '''
-            
-            # Execute query
-            self.execute_query(
-                query, 
-                (enrollment, name, subject, date, time, confidence),
-                commit=True
-            )
-            
-            # Clear cache for attendance queries
-            with self.cache_lock:
-                keys_to_remove = []
-                for key in self.query_cache:
-                    if 'attendance' in key.lower():
-                        keys_to_remove.append(key)
+            # Generate attendance file path if not provided
+            if not file_path:
+                time_for_filename = now.strftime("%Y-%m-%d_%H-%M-%S")
+                file_name = f"{subject}_{time_for_filename}.csv"
+                file_path = os.path.join("Attendance", file_name)
                 
-                for key in keys_to_remove:
-                    del self.query_cache[key]
-                    if key in self.cache_expiry:
-                        del self.cache_expiry[key]
+                # Create directory if it doesn't exist
+                os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                
+                # Create file with header if it doesn't exist
+                if not os.path.exists(file_path):
+                    with open(file_path, 'w', newline='') as f:
+                        writer = csv.writer(f)
+                        writer.writerow(["Enrollment", "Name", "Date", "Time"])
             
+            # Check if attendance already marked for this student/subject/date
+            self.cursor.execute(
+                'SELECT * FROM attendance WHERE enrollment = ? AND subject = ? AND date = ?',
+                (enrollment, subject, date)
+            )
+            if self.cursor.fetchone():
+                logger.info(f"Attendance already marked for student {name} ({enrollment}) in {subject} on {date}")
+                return True  # Already marked, consider it a success
+            
+            # Mark attendance in database
+            self.cursor.execute(
+                'INSERT INTO attendance (enrollment, name, subject, date, time, file_path) VALUES (?, ?, ?, ?, ?, ?)',
+                (enrollment, name, subject, date, time_str, file_path)
+            )
+            self.connection.commit()
+            
+            # Also write to CSV file for backwards compatibility
+            with open(file_path, 'a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([enrollment, name, date, time_str])
+            
+            logger.info(f"Marked attendance for student {name} ({enrollment}) in {subject} on {date}")
             return True
-        
-        except Exception as e:
+        except (sqlite3.Error, IOError) as e:
             logger.error(f"Error marking attendance: {e}")
             return False
     
-    def get_attendance_records(self, subject=None, date=None, student_id=None):
+    def get_attendance_records(self, subject=None, date=None, enrollment=None):
         """
         Get attendance records
         
         Args:
             subject (str, optional): Filter by subject
-            date (str, optional): Filter by date
-            student_id (str, optional): Filter by student ID
+            date (str, optional): Filter by date (YYYY-MM-DD)
+            enrollment (str, optional): Filter by student enrollment ID
             
         Returns:
-            list: List of attendance records
+            dict: Dictionary of attendance records by file path
         """
         try:
-            # Build query
-            query = "SELECT * FROM Attendance WHERE 1=1"
+            # Build query based on filters
+            query = 'SELECT * FROM attendance'
             params = []
             
+            filters = []
             if subject:
-                query += " AND subject = ?"
+                filters.append('subject = ?')
                 params.append(subject)
-            
             if date:
-                query += " AND date = ?"
+                filters.append('date = ?')
                 params.append(date)
-            
-            if student_id:
-                query += " AND enrollment = ?"
-                params.append(student_id)
-            
-            # Add ordering
-            query += " ORDER BY date DESC, time DESC"
-            
-            # Generate cache key
-            cache_key = f"attendance_records_{subject}_{date}_{student_id}"
-            
-            # Check cache
-            if cache_key in self.query_cache:
-                # Check expiry
-                with self.cache_lock:
-                    if cache_key in self.cache_expiry:
-                        expiry_time = self.cache_expiry[cache_key]
-                        if datetime.datetime.now() < expiry_time:
-                            return self.query_cache[cache_key]
+            if enrollment:
+                filters.append('enrollment = ?')
+                params.append(enrollment)
+                
+            if filters:
+                query += ' WHERE ' + ' AND '.join(filters)
             
             # Execute query
-            result = self.execute_query(query, tuple(params), fetch_all=True)
+            self.cursor.execute(query, params)
             
-            # Convert to dictionaries
-            records = []
-            for row in result:
-                records.append({
-                    "id": row[0],
-                    "enrollment": row[1],
-                    "name": row[2],
-                    "subject": row[3],
-                    "date": row[4],
-                    "time": row[5],
-                    "confidence": row[6]
-                })
+            # Get column names
+            columns = [desc[0] for desc in self.cursor.description]
             
-            # Update cache
-            with self.cache_lock:
-                self.query_cache[cache_key] = records
-                expiry_time = datetime.datetime.now() + datetime.timedelta(seconds=self.cache_ttl)
-                self.cache_expiry[cache_key] = expiry_time
+            # Fetch all rows
+            rows = self.cursor.fetchall()
             
-            return records
-        
-        except Exception as e:
+            # Organize records by file path
+            attendance_records = {}
+            for row in rows:
+                row_dict = dict(row)
+                file_path = row_dict.get('file_path', 'Unknown')
+                
+                if file_path not in attendance_records:
+                    attendance_records[file_path] = []
+                
+                attendance_records[file_path].append(row_dict)
+            
+            # Convert to DataFrames
+            for file_path, records in attendance_records.items():
+                attendance_records[file_path] = pd.DataFrame(records)
+            
+            return attendance_records
+        except sqlite3.Error as e:
             logger.error(f"Error getting attendance records: {e}")
-            return []
+            return {}
     
-    def get_attendance_statistics(self, subject=None, start_date=None, end_date=None):
+    def get_all_attendance_records(self):
         """
-        Get attendance statistics
+        Get all attendance records
+        
+        Returns:
+            dict: Dictionary of attendance records by file path
+        """
+        return self.get_attendance_records()
+    
+    def create_attendance_record(self, subject, date, time_str):
+        """
+        Create a new attendance record file
         
         Args:
-            subject (str, optional): Filter by subject
-            start_date (str, optional): Start date in YYYY-MM-DD format
-            end_date (str, optional): End date in YYYY-MM-DD format
+            subject (str): Subject name
+            date (str): Date string (YYYY-MM-DD)
+            time_str (str): Time string (HH:MM:SS)
             
         Returns:
-            dict: Attendance statistics
+            str: Path to the created file, or None if failed
         """
         try:
-            # Generate cache key
-            cache_key = f"attendance_stats_{subject}_{start_date}_{end_date}"
+            # Generate file path
+            file_name = f"{subject}_{date}_{time_str}.csv"
+            file_path = os.path.join("Attendance", file_name)
             
-            # Check cache
-            if cache_key in self.query_cache:
-                # Check expiry
-                with self.cache_lock:
-                    if cache_key in self.cache_expiry:
-                        expiry_time = self.cache_expiry[cache_key]
-                        if datetime.datetime.now() < expiry_time:
-                            return self.query_cache[cache_key]
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
             
-            # Build query for total attendance
-            query = "SELECT COUNT(*) FROM Attendance WHERE 1=1"
-            params = []
+            # Create file with header
+            with open(file_path, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(["Enrollment", "Name", "Date", "Time"])
             
-            if subject:
-                query += " AND subject = ?"
-                params.append(subject)
-            
-            if start_date:
-                query += " AND date >= ?"
-                params.append(start_date)
-            
-            if end_date:
-                query += " AND date <= ?"
-                params.append(end_date)
-            
-            # Execute query
-            result = self.execute_query(query, tuple(params), fetch_one=True)
-            total_attendance = result[0] if result else 0
-            
-            # Build query for unique students
-            query = "SELECT COUNT(DISTINCT enrollment) FROM Attendance WHERE 1=1"
-            
-            if subject:
-                query += " AND subject = ?"
-            
-            if start_date:
-                query += " AND date >= ?"
-            
-            if end_date:
-                query += " AND date <= ?"
-            
-            # Execute query
-            result = self.execute_query(query, tuple(params), fetch_one=True)
-            unique_students = result[0] if result else 0
-            
-            # Build query for attendance by date
-            query = "SELECT date, COUNT(*) FROM Attendance WHERE 1=1"
-            
-            if subject:
-                query += " AND subject = ?"
-            
-            if start_date:
-                query += " AND date >= ?"
-            
-            if end_date:
-                query += " AND date <= ?"
-            
-            query += " GROUP BY date ORDER BY date DESC"
-            
-            # Execute query
-            result = self.execute_query(query, tuple(params), fetch_all=True)
-            
-            # Convert to dictionary
-            attendance_by_date = {}
-            for row in result:
-                attendance_by_date[row[0]] = row[1]
-            
-            # Build query for top subjects
-            if not subject:
-                query = "SELECT subject, COUNT(*) FROM Attendance WHERE 1=1"
-                params = []
-                
-                if start_date:
-                    query += " AND date >= ?"
-                    params.append(start_date)
-                
-                if end_date:
-                    query += " AND date <= ?"
-                    params.append(end_date)
-                
-                query += " GROUP BY subject ORDER BY COUNT(*) DESC LIMIT 5"
-                
-                # Execute query
-                result = self.execute_query(query, tuple(params), fetch_all=True)
-                
-                # Convert to dictionary
-                top_subjects = {}
-                for row in result:
-                    top_subjects[row[0]] = row[1]
-            else:
-                top_subjects = {}
-            
-            # Build result
-            statistics = {
-                "total_attendance": total_attendance,
-                "unique_students": unique_students,
-                "attendance_by_date": attendance_by_date,
-                "top_subjects": top_subjects
-            }
-            
-            # Update cache
-            with self.cache_lock:
-                self.query_cache[cache_key] = statistics
-                expiry_time = datetime.datetime.now() + datetime.timedelta(seconds=self.cache_ttl)
-                self.cache_expiry[cache_key] = expiry_time
-            
-            return statistics
+            logger.info(f"Created attendance record file: {file_path}")
+            return file_path
+        except IOError as e:
+            logger.error(f"Error creating attendance record file: {e}")
+            return None
+    
+    def add_subject(self, subject_name):
+        """
+        Add a new subject
         
-        except Exception as e:
-            logger.error(f"Error getting attendance statistics: {e}")
-            return {
-                "total_attendance": 0,
-                "unique_students": 0,
-                "attendance_by_date": {},
-                "top_subjects": {}
-            }
-    
-    def clear_cache(self):
-        """Clear query cache"""
-        with self.cache_lock:
-            self.query_cache.clear()
-            self.cache_expiry.clear()
-        logger.info("Query cache cleared")
-    
-    def close(self):
-        """Close all database connections"""
-        try:
-            with self.pool_lock:
-                # Close connections in the pool
-                while not self.connection_pool.empty():
-                    conn = self.connection_pool.get_nowait()
-                    conn.close()
-                
-                self.active_connections = 0
+        Args:
+            subject_name (str): Subject name
             
-            logger.info("Database connections closed")
-            
-        except Exception as e:
-            logger.error(f"Error closing database connections: {e}")
-    
-    def vacuum(self):
-        """
-        Optimize the database by running VACUUM
-        
-        This should be run periodically to optimize the database
+        Returns:
+            bool: True if successful, False otherwise
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            conn.execute("VACUUM")
-            conn.close()
-            logger.info("Database optimized with VACUUM")
+            # Check if subject already exists
+            self.cursor.execute(
+                'SELECT * FROM subjects WHERE name = ?',
+                (subject_name,)
+            )
+            if self.cursor.fetchone():
+                logger.info(f"Subject already exists: {subject_name}")
+                return True  # Already exists, consider it a success
+            
+            # Add new subject
+            self.cursor.execute(
+                'INSERT INTO subjects (name) VALUES (?)',
+                (subject_name,)
+            )
+            self.connection.commit()
+            logger.info(f"Added new subject: {subject_name}")
+            
+            # Update subjects.txt for backwards compatibility
+            self._update_subjects_file()
+            
             return True
-        except Exception as e:
-            logger.error(f"Error optimizing database: {e}")
+        except sqlite3.Error as e:
+            logger.error(f"Error adding subject: {e}")
             return False
+    
+    def _update_subjects_file(self):
+        """Update the subjects.txt file for backwards compatibility"""
+        try:
+            # Get all subjects
+            self.cursor.execute('SELECT name FROM subjects ORDER BY name')
+            subjects = [row[0] for row in self.cursor.fetchall()]
+            
+            # Create config directory if it doesn't exist
+            os.makedirs("config", exist_ok=True)
+            
+            # Write to file
+            with open(os.path.join("config", "subjects.txt"), 'w') as f:
+                for subject in subjects:
+                    f.write(f"{subject}\n")
+                    
+            logger.info("Updated subjects.txt file")
+        except (sqlite3.Error, IOError) as e:
+            logger.error(f"Error updating subjects.txt file: {e}")
+    
+    def get_subjects(self):
+        """
+        Get all subjects
+        
+        Returns:
+            list: List of subject names
+        """
+        try:
+            self.cursor.execute('SELECT name FROM subjects ORDER BY name')
+            return [row[0] for row in self.cursor.fetchall()]
+        except sqlite3.Error as e:
+            logger.error(f"Error getting subjects: {e}")
+            return []
+    
+    def remove_subject(self, subject_name):
+        """
+        Remove a subject
+        
+        Args:
+            subject_name (str): Subject name
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Delete the subject
+            self.cursor.execute(
+                'DELETE FROM subjects WHERE name = ?',
+                (subject_name,)
+            )
+            self.connection.commit()
+            
+            # Check if any rows were affected
+            if self.cursor.rowcount > 0:
+                logger.info(f"Removed subject: {subject_name}")
+                
+                # Update subjects.txt for backwards compatibility
+                self._update_subjects_file()
+                
+                return True
+            else:
+                logger.warning(f"Subject not found: {subject_name}")
+                return False
+        except sqlite3.Error as e:
+            logger.error(f"Error removing subject: {e}")
+            return False
+    
+    def backup_database(self, backup_dir="backups/data_backup"):
+        """
+        Create a backup of the database
+        
+        Args:
+            backup_dir (str): Directory to store backups
+            
+        Returns:
+            str: Path to backup file if successful, None otherwise
+        """
+        try:
+            # Create backup directory if it doesn't exist
+            os.makedirs(backup_dir, exist_ok=True)
+            
+            # Generate backup file name with timestamp
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_file = os.path.join(backup_dir, f"attendance_db_backup_{timestamp}.db")
+            
+            # Close current connection to ensure all data is written
+            if self.connection:
+                self.connection.close()
+                self.connection = None
+                self.cursor = None
+            
+            # Copy the database file
+            shutil.copy2(self.db_path, backup_file)
+            
+            # Reconnect to database
+            self._connect()
+            
+            logger.info(f"Database backed up to: {backup_file}")
+            return backup_file
+        except Exception as e:
+            logger.error(f"Error backing up database: {e}")
+            
+            # Ensure connection is reestablished even if backup fails
+            if not self.connection:
+                self._connect()
+                
+            return None

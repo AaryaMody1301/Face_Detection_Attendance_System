@@ -1,0 +1,14 @@
+{
+    "admin": {
+        "password": "admin",
+        "full_name": "Administrator",
+        "role": "admin",
+        "created_at": 1743228907.3471174
+    },
+    "user": {
+        "password": "user",
+        "full_name": "Regular User",
+        "role": "user",
+        "created_at": 1743228907.3471181
+    }
+}

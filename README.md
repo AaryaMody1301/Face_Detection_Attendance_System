@@ -195,3 +195,14 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 **Developed as part of B.Sc. thesis at Parul University**
 
 <p align="center">Made with ❤️ for better attendance management</p>
+
+# Project Structure Update
+
+The project structure has been updated to improve code organization and reusability. Key improvements include:
+
+1. **Core Module**: Common functionality is now in `src/core/` and shared between both UIs
+2. **Unified Components**: Face detection, database handling, and configuration are now shared
+3. **Compatibility Layer**: Added to ease migration from the old structure
+4. **Migration Guide**: Check `src/utils/migration_guide.md` for detailed migration instructions
+
+For more details on the new structure, see `README_NEW_STRUCTURE.md`.

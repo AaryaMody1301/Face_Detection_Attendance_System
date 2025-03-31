@@ -15,8 +15,11 @@ import pandas as pd
 import csv
 import customtkinter as ctk  # Import CustomTkinter
 
-from src.face_recognition.detector import FaceDetector
-from src.database.sqlite_handler import SQLiteHandler  # Import SQLiteHandler
+# Import from core modules
+from src.core.face_recognition.face_detector import FaceDetector
+from src.core.database.db_handler import DatabaseHandler
+from src.core.utils.video_processor import VideoProcessor
+from src.core.utils.config_manager import ConfigManager
 from src.models.student import Student
 from src.utils.image_utils import draw_rectangle
 from src.utils.attendance_analytics import AttendanceAnalytics
@@ -55,7 +58,7 @@ class FaceAttendanceApp:
             print("Initializing face detector...")
             self.face_detector = FaceDetector()
             print("Initializing database...")
-            self.db = SQLiteHandler()  # Use SQLiteHandler
+            self.db = DatabaseHandler()  # Use DatabaseHandler from core
             
             # Camera and capture variables
             self.cam = None
@@ -403,16 +406,20 @@ that automates the process of marking attendance.
         self.subject_entry.insert(0, subject)
         self.update_status(f"Subject set to: {subject}")
     
-    def update_status(self, message):
+    def update_status(self, message, error=False):
         """
         Update the status label
         
         Args:
             message (str): Status message
+            error (bool): Whether this is an error message
         """
         try:
             if hasattr(self, 'status_label') and self.status_label.winfo_exists():
-                self.status_label.config(text=f"Status: {message}")
+                if error:
+                    self.status_label.config(text=f"Error: {message}", fg="red")
+                else:
+                    self.status_label.config(text=f"Status: {message}", fg="black")
                 # Force update to show status immediately
                 self.root.update_idletasks()
         except Exception as e:
@@ -1030,15 +1037,20 @@ that automates the process of marking attendance.
                     self.camera_status.config(text=f"Camera: Active (ID: {self.camera_id})", fg="green")
                     self.update_status(f"Camera started successfully: {self.camera_info}")
                     
-                    # Enable the tracking start button
-                    self.toggle_start_button()
+                    # Try to enable the track_img_btn if it exists
+                    try:
+                        if hasattr(self, 'track_img_btn'):
+                            self.track_img_btn.configure(state=tk.NORMAL)
+                    except Exception as btn_err:
+                        # Just log and continue if this fails
+                        logger.debug(f"Could not enable track button: {btn_err}")
                     
                     return True
                 else:
                     logger.error("Failed to initialize camera. No cameras available.")
                     self.update_status("Error: No cameras available", error=True)
                     messagebox.showerror("Camera Error", 
-                                         "Failed to initialize camera. Please check your camera connections.")
+                                       "Failed to initialize camera. Please check your camera connections.")
                     return False
             
             return False
@@ -1095,9 +1107,6 @@ that automates the process of marking attendance.
                 
                 # Reset the display frame
                 self._display_default_frame()
-                
-                # Disable the start tracking button if it exists
-                self.toggle_start_button()
                 
                 logger.info("Camera resources released successfully")
                 return True
@@ -1945,7 +1954,7 @@ that automates the process of marking attendance.
                 return subjects
                 
             except Exception as e:
-                print(f"Error loading subjects: {e}")
+                print(f"Error loadingssubjects: {e}")
                 return ["Python", "Java", "Web Dev", "Data Science"]  # Default subjects
         
         # Function to save a new subject

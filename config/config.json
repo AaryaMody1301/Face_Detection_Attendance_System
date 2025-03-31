@@ -4,10 +4,7 @@
     "log_level": "INFO",
     "camera": {
         "id": 0,
-        "resolution": [
-            1280,
-            720
-        ],
+        "resolution": "(1280, 720)",
         "fps": 30,
         "device_id": 0,
         "flip_image": false,
@@ -25,12 +22,17 @@
         "max_faces": 20,
         "processing_scale": 0.75,
         "stabilization": true,
-        "stabilization_frames": 5
+        "stabilization_frames": 5,
+        "detection_method": "auto",
+        "recognition_method": "hybrid",
+        "scale_factor": 0.5
     },
     "attendance": {
         "default_subject": "CS101",
         "auto_backup": true,
-        "attendance_directory": "Attendance"
+        "attendance_directory": "Attendance",
+        "auto_export_csv": true,
+        "duplicate_timeout": 600
     },
     "ui": {
         "font_family": "Helvetica",
@@ -40,9 +42,12 @@
         "window_height": 768,
         "fullscreen": false,
         "show_status_bar": true,
-        "theme": "system",
+        "theme": "light",
         "font_size": "medium",
-        "animations": true
+        "animations": true,
+        "type": "modern",
+        "remember_last_UI": true,
+        "color_theme": "purple"
     },
     "face_recognition": {
         "detection_model": "hog",
@@ -50,7 +55,10 @@
         "recognition_threshold": 0.6,
         "min_face_size": 30,
         "max_faces": 10,
-        "stabilization_frames": 3
+        "stabilization_frames": 3,
+        "method": "hybrid",
+        "threshold": 0.6,
+        "multi_detection": true
     },
     "video": {
         "width": 640,
@@ -62,10 +70,17 @@
         "connection_pool_size": 10,
         "timeout": 30,
         "backup_enabled": true,
-        "backup_interval_days": 7
+        "backup_interval_days": 7,
+        "path": "attendance.db",
+        "backup": {
+            "enabled": true,
+            "interval_days": 7,
+            "max_backups": 5
+        }
     },
     "memory": {
-        "performance_monitoring": false
+        "performance_monitoring": false,
+        "auto_gc": true
     },
     "performance_profile": "high",
     "data_paths": {
@@ -77,5 +92,18 @@
         "debug_mode": false,
         "memory_management": "auto",
         "log_level": "info"
+    },
+    "app": {
+        "name": "Face Detection Attendance System",
+        "version": "1.0.0"
+    },
+    "paths": {
+        "training_images": "TrainingImage",
+        "attendance_records": "Attendance",
+        "student_details": "StudentDetails"
+    },
+    "training": {
+        "max_images": 50,
+        "interval": 0.5
     }
 }

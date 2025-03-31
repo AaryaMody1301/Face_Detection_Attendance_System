@@ -12,6 +12,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from datetime import datetime, timedelta
 import sqlite3
 import threading
+import matplotlib.dates as mdates
 
 # Import from core modules
 from src.core.database.db_handler import DatabaseHandler
@@ -308,23 +309,117 @@ class AnalyticsDashboard(ctk.CTkFrame):
                 self.after(0, self._reset_loading_state)
     
     def _get_attendance_data_from_db(self, db_handler=None):
-        """Get attendance data from database"""
+        """Get attendance data from database and backup files"""
         try:
-            # Use provided handler or create a thread-local one if needed
-            should_close = False
-            if db_handler is None:
-                db_handler = DatabaseHandler()
-                should_close = True
-                
+            # Initialize empty DataFrame
+            attendance_data = pd.DataFrame()
+            
+            # First try to get data from database
             try:
-                # Get attendance records
-                return db_handler.get_all_attendance_records()
-            finally:
-                # Close connection if we created it
-                if should_close:
-                    db_handler.close()
+                # Use provided handler or create a thread-local one if needed
+                should_close = False
+                if db_handler is None:
+                    db_handler = DatabaseHandler()
+                    should_close = True
+                    
+                try:
+                    # Get attendance records from database
+                    db_data = db_handler.get_all_attendance_records()
+                    if not db_data.empty:
+                        attendance_data = db_data
+                        logger.info(f"Loaded {len(db_data)} records from database")
+                finally:
+                    # Close connection if we created it
+                    if should_close and db_handler:
+                        db_handler.close()
+            except Exception as e:
+                logger.warning(f"Could not load data from database: {e}")
+            
+            # Then try to load backup attendance files from CSV
+            csv_data = self._load_backup_attendance_files()
+            if not csv_data.empty:
+                # If we already have database data, combine them
+                if not attendance_data.empty:
+                    # Make sure columns match
+                    csv_data = csv_data.rename(columns={
+                        'ID': 'student_id',
+                        'Name': 'student_name',
+                        'Time': 'time',
+                        'Date': 'date'
+                    })
+                    
+                    # Combine data
+                    attendance_data = pd.concat([attendance_data, csv_data], ignore_index=True)
+                    logger.info(f"Combined {len(csv_data)} records from CSV files with database data")
+                else:
+                    # Just use CSV data
+                    attendance_data = csv_data
+                    logger.info(f"Loaded {len(csv_data)} records from CSV files")
+            
+            # If still no data, show warning
+            if attendance_data.empty:
+                logger.warning("No attendance data found in database or CSV files")
+                
+            return attendance_data
+            
         except Exception as e:
             logger.error(f"Error getting attendance records: {e}")
+            return pd.DataFrame()
+    
+    def _load_backup_attendance_files(self):
+        """Load attendance data from backup CSV files"""
+        try:
+            # Get attendance directory from config or use default
+            attendance_dir = os.path.join(os.getcwd(), "data", "attendance")
+            if not os.path.exists(attendance_dir):
+                logger.warning(f"Attendance directory not found: {attendance_dir}")
+                return pd.DataFrame()
+            
+            # Look for CSV files in the attendance directory
+            attendance_files = [f for f in os.listdir(attendance_dir) if f.endswith('.csv') and f.startswith('attendance_')]
+            
+            if not attendance_files:
+                logger.warning(f"No attendance CSV files found in {attendance_dir}")
+                return pd.DataFrame()
+            
+            # Load and combine all CSV files
+            all_data = []
+            for file in attendance_files:
+                try:
+                    file_path = os.path.join(attendance_dir, file)
+                    df = pd.read_csv(file_path)
+                    
+                    # Add source file for tracking
+                    df['source_file'] = file
+                    
+                    # Check required columns
+                    required_cols = ['ID', 'Name', 'Time', 'Date']
+                    if not all(col in df.columns for col in required_cols):
+                        logger.warning(f"File {file} is missing required columns: {required_cols}")
+                        continue
+                        
+                    all_data.append(df)
+                    logger.info(f"Loaded {len(df)} records from {file}")
+                except Exception as e:
+                    logger.error(f"Error loading file {file}: {e}")
+            
+            if not all_data:
+                logger.warning("No valid attendance data found in CSV files")
+                return pd.DataFrame()
+                
+            # Combine all DataFrames
+            combined_data = pd.concat(all_data, ignore_index=True)
+            
+            # Convert date strings to datetime objects for better handling
+            try:
+                combined_data['Date'] = pd.to_datetime(combined_data['Date'])
+            except Exception as e:
+                logger.warning(f"Error converting dates: {e}")
+            
+            return combined_data
+            
+        except Exception as e:
+            logger.error(f"Error loading backup attendance files: {e}")
             return pd.DataFrame()
 
     def _after_data_loaded(self, attendance_data=None):
@@ -563,49 +658,96 @@ class AnalyticsDashboard(ctk.CTkFrame):
 
     def render_attendance_over_time(self, data, ax):
         """Render attendance over time chart"""
-        # Group data by date
-        date_counts = {}
-        for record in data:
-            date = record.get('date')
-            if date in date_counts:
-                date_counts[date] += 1
-            else:
-                date_counts[date] = 1
+        try:
+            # Check if data is empty
+            if data is None or (hasattr(data, 'empty') and data.empty) or (isinstance(data, list) and len(data) == 0):
+                ax.text(0.5, 0.5, "No attendance data available for the selected period", 
+                      horizontalalignment='center', verticalalignment='center',
+                      transform=ax.transAxes, fontsize=14, color='gray')
+                return
+            
+            # Convert to DataFrame if it's a list or dictionary
+            if isinstance(data, (list, dict)):
+                data = pd.DataFrame(data)
+            
+            # Make sure we have a datetime column
+            date_col = None
+            for col in data.columns:
+                if col.lower() in ['date', 'dates', 'datetime', 'timestamp']:
+                    date_col = col
+                    break
+            
+            if date_col is None:
+                ax.text(0.5, 0.5, "No date information found in data", 
+                      horizontalalignment='center', verticalalignment='center',
+                      transform=ax.transAxes, fontsize=14, color='gray')
+                return
+            
+            # Ensure date column is datetime type
+            if not pd.api.types.is_datetime64_any_dtype(data[date_col]):
+                try:
+                    data[date_col] = pd.to_datetime(data[date_col])
+                except Exception as e:
+                    logger.error(f"Error converting dates: {e}")
+                    ax.text(0.5, 0.5, f"Error processing dates: {str(e)}", 
+                          horizontalalignment='center', verticalalignment='center',
+                          transform=ax.transAxes, fontsize=14, color='red')
+                    return
+            
+            # Group by date and count
+            try:
+                daily_counts = data.groupby(data[date_col].dt.date).size()
                 
-        # Sort dates
-        sorted_dates = sorted(date_counts.keys())
-        counts = [date_counts[date] for date in sorted_dates]
-        
-        # Create line plot with markers
-        ax.plot(sorted_dates, counts, marker='o', linestyle='-', linewidth=2, markersize=6, color='#3498db')
-        
-        # Set labels and title
-        ax.set_title('Attendance Over Time')
-        ax.set_xlabel('Date')
-        ax.set_ylabel('Number of Students')
-        
-        # Format x-axis dates
-        if len(sorted_dates) > 10:
-            # If too many dates, show every nth label
-            n = max(1, len(sorted_dates) // 10)
-            for i, label in enumerate(ax.get_xticklabels()):
-                if i % n != 0:
-                    label.set_visible(False)
-        
-        ax.tick_params(axis='x', rotation=45)
-        
-        # Add grid
-        ax.grid(True, linestyle='--', alpha=0.7)
-        
-        # Add average line
-        if counts:
-            avg = sum(counts) / len(counts)
-            ax.axhline(y=avg, color='r', linestyle='--', alpha=0.7, label=f'Avg: {avg:.1f}')
-            ax.legend()
-        
-        # Adjust colors for theme
-        if ctk.get_appearance_mode() == "Dark":
-            self._apply_dark_theme(ax)
+                # Convert to Series if needed
+                if not isinstance(daily_counts, pd.Series):
+                    daily_counts = pd.Series(daily_counts)
+                
+                # Sort by date
+                daily_counts = daily_counts.sort_index()
+                
+                # Plot the data
+                bars = ax.bar(daily_counts.index, daily_counts.values, 
+                         color='#3498db', alpha=0.8, width=0.8)
+                
+                # Add value labels on top of bars
+                for bar in bars:
+                    height = bar.get_height()
+                    if height > 0:  # Only add text to non-zero bars
+                        ax.text(bar.get_x() + bar.get_width()/2., height + 0.1,
+                               f'{int(height)}', ha='center', va='bottom', fontsize=9)
+                
+                # Format x-axis as dates
+                ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+                
+                # Rotate date labels for better readability
+                plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
+                
+                # Set labels and title
+                ax.set_title('Attendance Over Time')
+                ax.set_xlabel('Date')
+                ax.set_ylabel('Number of Students')
+                
+                # Add grid for y-axis
+                ax.grid(True, axis='y', linestyle='--', alpha=0.7)
+                
+                # Adjust layout to make sure dates are fully visible
+                plt.tight_layout()
+                
+                # Adjust colors for dark theme if needed
+                if ctk.get_appearance_mode() == "Dark":
+                    self._apply_dark_theme(ax)
+                
+            except Exception as e:
+                logger.error(f"Error plotting attendance data: {e}")
+                ax.text(0.5, 0.5, f"Error plotting data: {str(e)}", 
+                      horizontalalignment='center', verticalalignment='center',
+                      transform=ax.transAxes, fontsize=14, color='red')
+            
+        except Exception as e:
+            logger.error(f"Error in render_attendance_over_time: {e}")
+            ax.text(0.5, 0.5, f"Error rendering chart: {str(e)}", 
+                  horizontalalignment='center', verticalalignment='center',
+                  transform=ax.transAxes, fontsize=12, color='red')
 
     def render_student_comparison(self, data, ax):
         """Render student attendance comparison chart"""
@@ -957,3 +1099,66 @@ class AnalyticsDashboard(ctk.CTkFrame):
         ax.spines['right'].set_color('white')
         ax.spines['left'].set_color('white')
         ax.grid(color='gray')
+
+    def filter_data(self):
+        """Filter data based on current selections"""
+        if self.attendance_data is None or self.attendance_data.empty:
+            return pd.DataFrame()
+            
+        try:
+            # Make a copy to avoid modifying the original
+            filtered_data = self.attendance_data.copy()
+            
+            # Convert any date columns to datetime if they're not already
+            date_columns = ['date', 'Date'] 
+            for col in date_columns:
+                if col in filtered_data.columns:
+                    if not pd.api.types.is_datetime64_any_dtype(filtered_data[col]):
+                        try:
+                            filtered_data[col] = pd.to_datetime(filtered_data[col])
+                        except Exception as e:
+                            logger.warning(f"Could not convert {col} to datetime: {e}")
+            
+            # Filter by course if not "All"
+            if self.selected_course != "All":
+                course_columns = ['course', 'Course', 'subject', 'Subject']
+                course_col = None
+                
+                # Find the first course column that exists
+                for col in course_columns:
+                    if col in filtered_data.columns:
+                        course_col = col
+                        break
+                
+                if course_col:
+                    filtered_data = filtered_data[filtered_data[course_col].str.contains(self.selected_course, case=False, na=False)]
+            
+            # Filter by time period
+            date_col = None
+            for col in date_columns:
+                if col in filtered_data.columns:
+                    date_col = col
+                    break
+                    
+            if date_col and pd.api.types.is_datetime64_any_dtype(filtered_data[date_col]):
+                now = pd.Timestamp.now()
+                
+                if self.time_period == "week":
+                    start_date = now - pd.Timedelta(days=7)
+                    filtered_data = filtered_data[filtered_data[date_col] >= start_date]
+                elif self.time_period == "month":
+                    start_date = now - pd.Timedelta(days=30)
+                    filtered_data = filtered_data[filtered_data[date_col] >= start_date]
+                elif self.time_period == "semester":
+                    # Assume a semester is about 4 months
+                    start_date = now - pd.Timedelta(days=120)
+                    filtered_data = filtered_data[filtered_data[date_col] >= start_date]
+                elif self.time_period == "year":
+                    start_date = now - pd.Timedelta(days=365)
+                    filtered_data = filtered_data[filtered_data[date_col] >= start_date]
+            
+            return filtered_data
+            
+        except Exception as e:
+            logger.error(f"Error filtering data: {e}")
+            return pd.DataFrame()

@@ -1,9 +1,2 @@
-ID,Name,Course,Year
-1001,John Smith,Computer Science,2023
-1002,Jane Doe,Mathematics,2024
-1003,Robert Johnson,Physics,2023
-1004,Emily Wilson,Biology,2025
-123,Aarya,Unknown,2025
-789,Harsh,Unknown,2025
-458,Hina mam,Unknown,2025
-456,Yash,Unknown,2025
+ID,Name,Encoding,Last Updated,Course,Year
+123,Aarya,,,Python,2025

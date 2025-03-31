@@ -1,175 +1,166 @@
 # Face Detection Attendance System
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+A facial recognition-based attendance management system built with Python, OpenCV, and customtkinter.
 
-A facial recognition-based attendance system that automates attendance marking using computer vision techniques, achieving **95% accuracy** in facial recognition and a **40% reduction in processing time** for real-time performance.
+![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![OpenCV](https://img.shields.io/badge/OpenCV-4.x-red)
 
-<div align="center">
-    <img src="docs/img/screenshot.png" alt="Face Detection Attendance System" width="600px">
-    <p><em>Face Detection Attendance System in action</em></p>
-</div>
+## Features
 
-## ✨ Features
+- **Facial Recognition Attendance**: Automatically mark attendance using face detection and recognition
+- **Student Registration**: Register new students with their facial data
+- **Attendance Management**: View, filter, and export attendance records
+- **Modern UI**: Clean, intuitive user interface with both light and dark mode support
+- **Analytics Dashboard**: Visualize attendance statistics and patterns
+- **Multi-platform**: Works on Windows, macOS, and Linux
 
-- **🎥 Real-time Face Detection**: Detect and recognize faces in real-time using a webcam
-- **🎯 High Accuracy**: 95% face recognition accuracy with OpenCV and LBPH algorithm
-- **👨‍🎓 Student Management**: Add and manage student records easily
-- **✅ Attendance Tracking**: Automatically mark attendance when faces are recognized
-- **📊 Attendance Reports**: View and export attendance reports by subject and date
-- **🖥️ User-friendly Interface**: Simple and intuitive graphical user interface
-- **📁 Folder Organization**: Automatically organize training images and attendance records
+## Screenshots
 
-## 🚀 Quick Start
+<p align="center">
+  <img src="assets/screenshots/dashboard.png" alt="Dashboard" width="45%">
+  <img src="assets/screenshots/attendance.png" alt="Attendance Module" width="45%">
+</p>
+
+## Installation
 
 ### Prerequisites
 
 - Python 3.8 or higher
-- Webcam or camera device
-- Windows, macOS, or Linux operating system
+- Webcam (built-in or external)
+- The following Python packages (installed automatically via requirements.txt):
+  - opencv-contrib-python (not regular opencv-python)
+  - customtkinter
+  - Pillow (PIL Fork)
+  - NumPy
+  - Pandas
+  - face-recognition
+  - dlib
 
-### Installation
+### Steps
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/Face_Detection_Attendance_System.git
-   cd Face_Detection_Attendance_System
+   git clone https://github.com/yourusername/face-detection-attendance-system.git
+   cd face-detection-attendance-system
    ```
 
-2. Set up a virtual environment and install dependencies:
+2. Create a virtual environment (optional but recommended):
    ```bash
+   # On Windows
    python -m venv venv
-   
-   # On Windows:
    venv\Scripts\activate
    
-   # On macOS/Linux:
+   # On macOS/Linux
+   python3 -m venv venv
    source venv/bin/activate
-   
-   # Install dependencies
-   pip install -e .
    ```
 
-3. Run the application:
+3. Install dependencies:
    ```bash
-   python main.py app
+   pip install -r requirements.txt
    ```
 
-## 📖 Usage
+4. Run the application:
+   ```bash
+   # On Windows
+   python main.py
+   
+   # On macOS/Linux
+   python3 main.py
+   ```
 
-### GUI Application
+## GitHub Setup
 
-Simply run the main application:
+To setup this project on your own GitHub repository:
 
-```bash
-python main.py app
+1. Create a new repository on GitHub without initializing with README, license, or gitignore files
+
+2. Initialize git in your local project folder (if not already done):
+   ```bash
+   git init
+   ```
+
+3. Add all files to git:
+   ```bash
+   git add .
+   ```
+
+4. Commit the files:
+   ```bash
+   git commit -m "Initial commit"
+   ```
+
+5. Add your GitHub repository as a remote:
+   ```bash
+   git remote add origin https://github.com/yourusername/your-repo-name.git
+   ```
+
+6. Push to GitHub:
+   ```bash
+   git push -u origin main
+   ```
+
+## Usage
+
+### Dashboard
+
+The dashboard provides an overview of attendance statistics and quick access to main functions.
+
+### Student Registration
+
+1. Navigate to the Students tab
+2. Click "Add New Student"
+3. Enter student details (ID and Name)
+4. Capture facial images using the webcam
+5. Save the student record
+
+### Mark Attendance
+
+1. Navigate to the Attendance tab
+2. Select the relevant subject/class
+3. Start the camera
+4. The system will automatically detect and mark attendance for recognized students
+5. Manual attendance can also be recorded if needed
+
+### Reports
+
+1. Navigate to the Reports tab
+2. Filter by date, subject, or student
+3. View attendance records in the table
+4. Export data to CSV for further analysis
+
+## Structure
+
+```
+face-detection-attendance-system/
+├── src/
+│   ├── face_recognition/  # Face detection and recognition modules
+│   ├── ui/                # User interface components
+│   ├── resources/         # Application resources
+│   │   ├── icons/         # UI icons
+│   │   └── haarcascades/  # OpenCV cascade files
+│   ├── utils/             # Utility functions
+│   └── main.py            # Application entry point
+├── Data/                  # Data storage
+├── Attendance/            # Attendance records
+├── TrainingImage/         # Student facial images
+├── TrainingImageLabel/    # Face recognition models
+├── StudentDetails/        # Student information
+├── requirements.txt       # Python dependencies
+├── LICENSE                # MIT License
+└── README.md              # Project documentation
 ```
 
-### Command Line Interface
+## Troubleshooting
 
-The system provides a comprehensive command-line interface:
+- **Camera not working**: Ensure your webcam is properly connected and not being used by another application
+- **Face not detected**: Adjust lighting conditions and ensure the face is clearly visible
+- **Recognition issues**: Try re-registering the student with more varied facial images
+- **OpenCV errors**: Make sure you've installed `opencv-contrib-python` (not regular `opencv-python`)
+- **Missing face module**: If you get `module 'cv2' has no attribute 'face'` error, uninstall `opencv-python` and install `opencv-contrib-python`
 
-* **Take Attendance**:
-  ```bash
-  python main.py take "Python Class"
-  ```
-
-* **Train Model**:
-  ```bash
-  python main.py train
-  ```
-
-* **View Attendance Records**:
-  ```bash
-  python main.py view --subject "Python Class" --export
-  ```
-
-### Adding a New Student
-
-1. Start the application: `python main.py app`
-2. Enter the student's enrollment ID and name in the registration section
-3. Click "Take Images" to capture multiple face images for training
-4. Click "Train Images" to update the recognition model
-
-### Taking Attendance
-
-1. Enter the subject name
-2. Click "Track Images" to start face recognition
-3. The system will detect faces and mark attendance automatically
-4. Click "View Attendance" to see attendance records
-
-## 🔧 Development
-
-### Project Structure
-
-```
-Face_Detection_Attendance_System/
-├── src/                        # Source code
-│   ├── face_recognition/       # Face recognition modules
-│   ├── database/               # Database handling
-│   ├── models/                 # Data models
-│   ├── ui/                     # User interface
-│   ├── utils/                  # Utilities
-│   └── cli/                    # Command-line interface
-├── tests/                      # Test suite
-├── docs/                       # Documentation
-│   └── img/                    # Images for documentation
-├── Attendance/                 # Directory for attendance records
-│   ├── Backup/                 # Backup of attendance records
-│   ├── Exports/                # Consolidated export files
-│   └── [Subject]/             # Folders for each subject
-├── StudentDetails/             # Directory for student information
-├── TrainingImage/              # Directory for training images
-│   ├── Backup/                 # Backup of all original images
-│   ├── Organized/              # Images organized by student
-│   └── Optimized/              # Optimized training dataset
-├── TrainingImageLabel/         # Directory for trained models
-├── Makefile                    # Makefile for common tasks
-├── setup.py                    # Package setup file
-├── requirements.txt            # Project dependencies
-├── main.py                     # Main entry point
-└── README.md                   # This file
-```
-
-### Running Tests
-
-```bash
-pytest tests/
-```
-
-### Development Commands
-
-We use a Makefile to simplify common development tasks:
-
-```bash
-make setup    # Set up development environment
-make train    # Train the face recognition model
-make app      # Run the GUI application
-make test     # Run the test suite
-make lint     # Run linting checks
-make format   # Format code with black and isort
-```
-
-## 🧠 How It Works
-
-1. **Face Detection**: Haar Cascade Classifiers detect faces in video frames.
-
-2. **Face Recognition**: LBPH (Local Binary Pattern Histogram) algorithm recognizes faces by analyzing texture patterns in facial regions.
-
-3. **Database Management**: Student details and attendance records are stored in CSV files for easy viewing and exporting.
-
-4. **User Interface**: A Tkinter-based GUI provides an intuitive way to interact with the system.
-
-## 📋 To-Do List
-
-- [ ] Add cloud storage integration for data backup
-- [ ] Implement multi-face detection for group attendance
-- [ ] Add admin dashboard for analytics
-- [ ] Create mobile application integration
-- [ ] Add face recognition model performance metrics
-
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
@@ -179,30 +170,12 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
-## 📜 License
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🙏 Acknowledgments
+## Acknowledgements
 
-- OpenCV for the computer vision algorithms
-- Haar Cascade Classifiers for face detection
-- LBPH algorithm for face recognition
-- Parul University for the opportunity to work on this project
-
----
-
-**Developed as part of B.Sc. thesis at Parul University**
-
-<p align="center">Made with ❤️ for better attendance management</p>
-
-# Project Structure Update
-
-The project structure has been updated to improve code organization and reusability. Key improvements include:
-
-1. **Core Module**: Common functionality is now in `src/core/` and shared between both UIs
-2. **Unified Components**: Face detection, database handling, and configuration are now shared
-3. **Compatibility Layer**: Added to ease migration from the old structure
-4. **Migration Guide**: Check `src/utils/migration_guide.md` for detailed migration instructions
-
-For more details on the new structure, see `README_NEW_STRUCTURE.md`.
+- [OpenCV](https://opencv.org/) for computer vision capabilities
+- [face_recognition](https://github.com/ageitgey/face_recognition) for facial recognition
+- [customtkinter](https://github.com/TomSchimansky/CustomTkinter) for modern UI components

@@ -14,6 +14,7 @@ from pathlib import Path
 import pandas as pd
 import face_recognition
 import datetime
+import csv
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -22,48 +23,45 @@ class FaceDetector:
     """Face detection and recognition class"""
     
     def __init__(self, method='haar', threshold=0.6, students_csv_path=None):
-        """
-        Initialize face detector with specified method
+        """Initialize face detector with specified detection method and threshold"""
+        self.detection_method = method
+        self.confidence_threshold = threshold
+        self.student_data_path = students_csv_path or os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
+            "data", "students.csv"
+        )
         
-        Parameters:
-        -----------
-        method : str
-            Face detection method ('haar', 'hog', or 'cnn')
-        threshold : float
-            Confidence threshold for face recognition (0.0-1.0)
-        students_csv_path : str or None
-            Path to CSV file with student data (ID, Name, Course, Year)
-        """
-        self.method = method
-        self.threshold = threshold
-        self.students_csv_path = students_csv_path
-        self.face_cascade = None
-        self.recognizer = None
-        self.student_data = None
-        self.student_names = {}  # Map of ID to name
-        self._is_recognizer_trained = False  # Flag to track if recognizer has been trained
-        self.model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 
-                                    'models', 'face_recognizer.yml')
-        self.training_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 
-                                      'data', 'training_images')
-        # Define path to backup training images
-        self.backup_training_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                                           'backups', 'training_image_backup', 'Organized')
+        # Define model path and training directory
+        self.model_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
+            "models", "face_recognizer.yml"
+        )
+        self.training_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
+            "data", "training_images"
+        )
         
-        # Initialize face detection models
-        self._init_models()
+        # Create directories
+        os.makedirs(os.path.dirname(self.student_data_path), exist_ok=True)
+        os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
+        os.makedirs(self.training_dir, exist_ok=True)
         
-        # Load student data if path provided
-        if students_csv_path:
-            try:
-                self._load_student_data(students_csv_path)
-                # Check for backup training images and copy them if needed
-                self._import_backup_training_images()
-                # Train face recognizer if needed
-                self._train_recognizer_if_needed()
-            except Exception as e:
-                logger.error(f"Error initializing face detector: {e}")
-                raise
+        # Store student data
+        self.student_data = {}
+        self.student_names = {}
+        self._is_recognizer_trained = False
+        
+        # Initialize models based on detection method
+        try:
+            self._init_models()
+            
+            # Load student data
+            self.student_data = self._load_student_data()
+            logger.info(f"Loaded {len(self.student_data)} student records")
+            
+        except Exception as e:
+            logger.error(f"Error initializing face detector: {e}")
+            raise
     
     def _init_models(self):
         """Initialize face detection models based on selected method"""
@@ -100,263 +98,94 @@ class FaceDetector:
             self._load_recognizer_if_exists()
             
             # Initialize optional methods based on configuration
-            if self.method in ['hog', 'cnn']:
+            if self.detection_method in ['hog', 'cnn']:
                 try:
                     import face_recognition
-                    logger.info(f"Using {self.method.upper()} method with face_recognition library")
+                    logger.info(f"Using {self.detection_method.upper()} method with face_recognition library")
                 except ImportError:
                     logger.warning("face_recognition library not available, falling back to Haar cascade")
-                    self.method = 'haar'
+                    self.detection_method = 'haar'
         
         except Exception as e:
             logger.error(f"Error initializing face detection models: {e}")
             raise
     
-    def _load_student_data(self, csv_path):
-        """Load student data from CSV file"""
+    def _load_student_data(self):
+        """Load student data from CSV"""
         try:
-            if not os.path.exists(csv_path):
-                logger.error(f"Student data CSV not found: {csv_path}")
-                # Create the CSV file with default content
-                self._create_default_student_csv(csv_path)
+            # Create student data file if not exists
+            if not os.path.exists(self.student_data_path):
+                logger.info(f"Creating new student data file at {self.student_data_path}")
+                os.makedirs(os.path.dirname(self.student_data_path), exist_ok=True)
+                with open(self.student_data_path, 'w', newline='') as file:
+                    writer = csv.writer(file)
+                    writer.writerow(['ID', 'Name', 'Encoding', 'Last Updated'])
             
-            # Read CSV with proper encoding handling
-            encodings_to_try = ['utf-8', 'latin1', 'cp1252']
-            success = False
+            # Read data from CSV
+            student_data = {}
+            with open(self.student_data_path, 'r') as file:
+                reader = csv.DictReader(file)
+                
+                # Verify required columns exist
+                headers = reader.fieldnames
+                required_fields = ['ID', 'Name', 'Encoding']
+                
+                if not headers or not all(field in headers for field in required_fields):
+                    logger.error(f"Student data file missing required columns: {required_fields}")
+                    # Create a new file with correct headers
+                    with open(self.student_data_path, 'w', newline='') as new_file:
+                        writer = csv.writer(new_file)
+                        writer.writerow(['ID', 'Name', 'Encoding', 'Last Updated'])
+                    return {}
+                
+                # Process student data
+                for row in reader:
+                    # Skip invalid rows
+                    if not row.get('ID') or not row.get('Name'):
+                        logger.warning(f"Skipping invalid student record: {row}")
+                        continue
+                        
+                    student_id = row['ID']
+                    encoding_str = row.get('Encoding', '')
+                    
+                    if encoding_str:
+                        try:
+                            # Convert encoding string back to numpy array
+                            encoding = np.fromstring(encoding_str.strip('[]'), sep=',')
+                            student_data[student_id] = {
+                                'name': row['Name'],
+                                'encoding': encoding,
+                                'last_updated': row.get('Last Updated', '')
+                            }
+                        except Exception as e:
+                            logger.error(f"Error parsing encoding for student {student_id}: {e}")
+                    else:
+                        # Store student without encoding
+                        student_data[student_id] = {
+                            'name': row['Name'],
+                            'encoding': None,
+                            'last_updated': row.get('Last Updated', '')
+                        }
+                
+            logger.info(f"Loaded {len(student_data)} student records")
+            return student_data
             
-            for encoding in encodings_to_try:
-                try:
-                    self.student_data = pd.read_csv(csv_path, encoding=encoding)
-                    success = True
-                    logger.info(f"Successfully loaded CSV with encoding: {encoding}")
-                    break
-                except UnicodeDecodeError:
-                    logger.warning(f"Failed to load CSV with encoding: {encoding}")
-                except Exception as e:
-                    logger.error(f"Error loading CSV with encoding {encoding}: {e}")
-            
-            if not success:
-                logger.error("Failed to load CSV with all encodings, creating a new one")
-                self._create_default_student_csv(csv_path)
-                self.student_data = pd.read_csv(csv_path, encoding='utf-8')
-            
-            # Ensure required columns exist
-            required_columns = ['ID', 'Name']
-            missing_columns = [col for col in required_columns if col not in self.student_data.columns]
-            
-            if missing_columns:
-                logger.error(f"Required columns missing in student data: {missing_columns}")
-                # Try to fix column names if they exist with different case
-                for column in missing_columns:
-                    # First try to find columns with same name but different case
-                    for existing_col in self.student_data.columns:
-                        if existing_col.lower() == column.lower():
-                            self.student_data = self.student_data.rename(columns={existing_col: column})
-                            logger.info(f"Renamed column from {existing_col} to {column}")
-                            missing_columns.remove(column)
-                            break
-            
-            # Check again after fixes
-            missing_columns = [col for col in required_columns if col not in self.student_data.columns]
-            if missing_columns:
-                logger.error(f"Required columns still missing in student data: {missing_columns}")
-                # Create new file with correct columns
-                self._create_default_student_csv(csv_path)
-                self.student_data = pd.read_csv(csv_path, encoding='utf-8')
-            
-            # Create mapping of ID to name
-            for _, row in self.student_data.iterrows():
-                # Convert ID to string or int as needed
-                id_value = row['ID']
-                # Convert to int for face recognition (needs numeric IDs)
-                id_int = int(id_value) if isinstance(id_value, (str, int)) else id_value
-                self.student_names[id_int] = row['Name']
-            
-            logger.info(f"Loaded {len(self.student_data)} students from {csv_path}")
-            logger.debug(f"Student names mapping: {self.student_names}")
-        
         except Exception as e:
             logger.error(f"Error loading student data: {e}")
-            raise
-            
-    def _create_default_student_csv(self, csv_path):
-        """Create a default student CSV file with sample data"""
-        try:
-            # Ensure directory exists
-            os.makedirs(os.path.dirname(csv_path), exist_ok=True)
-            
-            # Write CSV with default content
-            with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-                f.write("ID,Name,Course,Year\n")
-                f.write("1001,John Smith,Computer Science,2023\n")
-                f.write("1002,Jane Doe,Mathematics,2024\n")
-                f.write("1003,Robert Johnson,Physics,2023\n")
-                f.write("1004,Emily Wilson,Biology,2025\n")
-            
-            logger.info(f"Created default student CSV at {csv_path}")
-            return True
-        except Exception as e:
-            logger.error(f"Error creating default student CSV: {e}")
-            return False
-    
-    def _import_backup_training_images(self):
-        """Import training images from backup folder if available"""
-        try:
-            # Check if backup training directory exists
-            if not os.path.exists(self.backup_training_dir):
-                logger.warning(f"Backup training directory not found: {self.backup_training_dir}")
-                return False
-            
-            # Check if main training directory exists, create if not
-            if not os.path.exists(self.training_dir):
-                os.makedirs(self.training_dir, exist_ok=True)
-                logger.info(f"Created training images directory: {self.training_dir}")
-            
-            # Check if backup has images and if main training dir is empty
-            backup_has_images = False
-            for item in os.listdir(self.backup_training_dir):
-                if os.path.isdir(os.path.join(self.backup_training_dir, item)):
-                    backup_has_images = True
-                    break
-        
-            main_dir_empty = True
-            if os.path.exists(self.training_dir):
-                main_dir_empty = len(os.listdir(self.training_dir)) == 0
-            
-            # If backup has images and main training dir is empty, import them
-            if backup_has_images and main_dir_empty:
-                logger.info(f"Importing training images from backup: {self.backup_training_dir}")
-                
-                # Check and update student data with backup folder info
-                self._update_student_data_from_backup()
-                
-                # Copy images from backup to training directory
-                imported_count = 0
-                for student_dir in os.listdir(self.backup_training_dir):
-                    student_path = os.path.join(self.backup_training_dir, student_dir)
-                    if os.path.isdir(student_path):
-                        # Extract student ID from the folder name (e.g., "John_123" -> "123")
-                        try:
-                            # Format could be either Name_ID or just ID
-                            parts = student_dir.split('_')
-                            if len(parts) > 1:
-                                student_id = parts[-1]  # Last part should be the ID
-                            else:
-                                student_id = student_dir  # Assume folder name is the ID
-                                
-                            # Create target directory
-                            target_dir = os.path.join(self.training_dir, student_id)
-                            os.makedirs(target_dir, exist_ok=True)
-                            
-                            # Copy images to target directory
-                            file_count = 0
-                            for filename in os.listdir(student_path):
-                                if filename.lower().endswith(('.jpg', '.jpeg', '.png')) and not os.path.isdir(os.path.join(student_path, filename)):
-                                    # Copy the file with a standardized name
-                                    src_file = os.path.join(student_path, filename)
-                                    dst_file = os.path.join(target_dir, f"{student_id}_{file_count}.jpg")
-                                    
-                                    # Read and save to ensure format compatibility
-                                    img = cv2.imread(src_file)
-                                    if img is not None:
-                                        cv2.imwrite(dst_file, img)
-                                        file_count += 1
-                                        imported_count += 1
-                            
-                            logger.info(f"Imported {file_count} images for student ID: {student_id}")
-                        except Exception as e:
-                            logger.error(f"Error importing images for {student_dir}: {e}")
-                
-                logger.info(f"Total training images imported: {imported_count}")
-                return imported_count > 0
-            else:
-                if not backup_has_images:
-                    logger.info("No backup training images found")
-                else:
-                    logger.info("Training directory already has images, skipping import")
-                return False
-                
-        except Exception as e:
-            logger.error(f"Error importing backup training images: {e}")
-            return False
-            
-    def _update_student_data_from_backup(self):
-        """Update student data from backup folder names"""
-        try:
-            # Check if backup training directory exists
-            if not os.path.exists(self.backup_training_dir):
-                return False
-            
-            # Get current student data
-            students_to_add = []
-            
-            # Process each student directory in backup
-            for student_dir in os.listdir(self.backup_training_dir):
-                student_path = os.path.join(self.backup_training_dir, student_dir)
-                if os.path.isdir(student_path):
-                    try:
-                        # Extract student name and ID from the folder name (e.g., "John_123")
-                        parts = student_dir.split('_')
-                        if len(parts) > 1:
-                            student_name = parts[0].replace('.', ' ')  # Name part
-                            student_id = parts[-1]  # ID part
-                        else:
-                            student_name = f"Student {student_dir}"  # Default name
-                            student_id = student_dir  # Assume folder name is the ID
-                        
-                        # Check if this student ID already exists in our data
-                        if self.student_data is not None:
-                            existing = self.student_data[self.student_data['ID'].astype(str) == str(student_id)]
-                            if len(existing) > 0:
-                                continue  # Skip if already in data
-                        
-                        # Add to list for later addition
-                        students_to_add.append({
-                            'ID': student_id,
-                            'Name': student_name,
-                            'Course': 'Unknown',  # Default values
-                            'Year': str(datetime.datetime.now().year)
-                        })
-                        
-                    except Exception as e:
-                        logger.error(f"Error processing student folder {student_dir}: {e}")
-            
-            # If we have new students to add and CSV path is defined
-            if students_to_add and self.students_csv_path:
-                # Load existing CSV or create new one
-                if self.student_data is None:
-                    # Create new DataFrame
-                    self.student_data = pd.DataFrame(students_to_add)
-                    logger.info(f"Created new student data with {len(students_to_add)} students from backup")
-                else:
-                    # Append to existing data
-                    new_data = pd.DataFrame(students_to_add)
-                    self.student_data = pd.concat([self.student_data, new_data], ignore_index=True)
-                    logger.info(f"Added {len(students_to_add)} students from backup to existing data")
-                
-                # Save to CSV
-                self.student_data.to_csv(self.students_csv_path, index=False)
-                
-                # Update name mapping
-                for _, row in self.student_data.iterrows():
-                    id_value = row['ID']
-                    try:
-                        id_int = int(id_value) if str(id_value).isdigit() else id_value
-                        self.student_names[id_int] = row['Name']
-                    except Exception as e:
-                        logger.error(f"Error converting ID {id_value} to int: {e}")
-                
-                return True
-            
-            return False
-                
-        except Exception as e:
-            logger.error(f"Error updating student data from backup: {e}")
-            return False
+            return {}
     
     def _load_recognizer_if_exists(self):
         """Load the pre-trained face recognizer model if it exists"""
         try:
+            # Define model path if not already defined
+            if not hasattr(self, 'model_path'):
+                self.model_path = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
+                    "models", "face_recognizer.yml"
+                )
+                # Create directory if it doesn't exist
+                os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
+                
             if os.path.exists(self.model_path):
                 self.recognizer.read(self.model_path)
                 logger.info(f"Loaded face recognizer model from {self.model_path}")
@@ -374,6 +203,24 @@ class FaceDetector:
     def _train_recognizer_if_needed(self):
         """Train face recognizer if training data is available"""
         try:
+            # Define training directory if not already defined
+            if not hasattr(self, 'training_dir'):
+                self.training_dir = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
+                    "data", "training_images"
+                )
+                # Create directory if it doesn't exist
+                os.makedirs(self.training_dir, exist_ok=True)
+                
+            # Define model path if not already defined
+            if not hasattr(self, 'model_path'):
+                self.model_path = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
+                    "models", "face_recognizer.yml"
+                )
+                # Create directory if it doesn't exist
+                os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
+                
             # Check if training directory exists
             if not os.path.exists(self.training_dir):
                 logger.warning(f"Training images directory not found: {self.training_dir}")
@@ -381,7 +228,7 @@ class FaceDetector:
                 logger.info(f"Created training images directory: {self.training_dir}")
                 
                 # Try to import from backup if available
-                if self._import_backup_training_images():
+                if hasattr(self, '_import_backup_training_images') and self._import_backup_training_images():
                     logger.info("Successfully imported training images from backup")
                 else:
                     logger.warning("No backup training images available")
@@ -637,3 +484,56 @@ class FaceDetector:
         except Exception as e:
             logger.error(f"Error getting student name: {e}")
             return "Unknown"
+
+    def save_student(self, student_id, student_name, encoding=None):
+        """Save or update student data"""
+        if not student_id or student_id.strip() == '':
+            logger.error("Cannot save student: Empty student ID")
+            return False
+            
+        if not student_name or student_name.strip() == '':
+            logger.error(f"Cannot save student {student_id}: Empty student name")
+            return False
+        
+        try:
+            # Convert ID to string for consistency
+            student_id = str(student_id).strip()
+            student_name = str(student_name).strip()
+            
+            # Update in-memory data
+            self.student_data[student_id] = {
+                'name': student_name,
+                'encoding': encoding,
+                'last_updated': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+            
+            # Prepare data for CSV
+            rows = []
+            for id, data in self.student_data.items():
+                encoding_str = ''
+                if data['encoding'] is not None:
+                    encoding_str = np.array2string(data['encoding'], separator=',').replace('\n', '')
+                
+                rows.append({
+                    'ID': id,
+                    'Name': data['name'],
+                    'Encoding': encoding_str,
+                    'Last Updated': data.get('last_updated', '')
+                })
+            
+            # Create directory if not exists
+            os.makedirs(os.path.dirname(self.student_data_path), exist_ok=True)
+            
+            # Write to CSV
+            with open(self.student_data_path, 'w', newline='') as file:
+                fieldnames = ['ID', 'Name', 'Encoding', 'Last Updated']
+                writer = csv.DictWriter(file, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(rows)
+            
+            logger.info(f"Saved student data for {student_name} (ID: {student_id})")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error saving student details: {e}")
+            return False

@@ -42,7 +42,7 @@
         "window_height": 768,
         "fullscreen": false,
         "show_status_bar": true,
-        "theme": "light",
+        "theme": "dark",
         "font_size": "medium",
         "animations": true,
         "type": "modern",

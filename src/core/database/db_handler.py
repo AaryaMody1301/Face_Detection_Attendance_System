@@ -56,7 +56,7 @@ class DatabaseHandler:
                 )
             ''')
             
-            # Create attendance table if it doesn't exist with consistent field names
+            # Create attendance table if it doesn't exist
             self.cursor.execute('''
                 CREATE TABLE IF NOT EXISTS attendance (
                     id INTEGER PRIMARY KEY,
@@ -67,63 +67,6 @@ class DatabaseHandler:
                     FOREIGN KEY (student_id) REFERENCES students(id)
                 )
             ''')
-            
-            # Check if we need to update the attendance table structure
-            try:
-                # Check if student_id column exists
-                self.cursor.execute("SELECT student_id FROM attendance LIMIT 1")
-            except sqlite3.OperationalError:
-                # Column doesn't exist, need to recreate the table with proper structure
-                logger.info("Updating attendance table structure...")
-                
-                # Get existing data
-                try:
-                    self.cursor.execute("SELECT * FROM attendance")
-                    old_data = self.cursor.fetchall()
-                except:
-                    old_data = []
-                
-                # Drop old table
-                self.cursor.execute("DROP TABLE IF EXISTS attendance")
-                
-                # Create new table with correct structure
-                self.cursor.execute('''
-                    CREATE TABLE attendance (
-                        id INTEGER PRIMARY KEY,
-                        student_id INTEGER,
-                        subject TEXT NOT NULL,
-                        date TEXT NOT NULL,
-                        time TEXT NOT NULL,
-                        FOREIGN KEY (student_id) REFERENCES students(id)
-                    )
-                ''')
-                
-                # If there was existing data, try to migrate it
-                if old_data and len(old_data) > 0:
-                    logger.info(f"Migrating {len(old_data)} attendance records...")
-                    # Get column names from the first row's keys
-                    old_column_names = [description[0] for description in self.cursor.description]
-                    
-                    # Check if we need to handle a different column name for student_id
-                    student_id_index = None
-                    for i, col_name in enumerate(old_column_names):
-                        if col_name.lower() in ('student_id', 'studentid', 'student'):
-                            student_id_index = i
-                            break
-                    
-                    # Transfer data
-                    if student_id_index is not None:
-                        for row in old_data:
-                            try:
-                                self.cursor.execute(
-                                    "INSERT INTO attendance (student_id, subject, date, time) VALUES (?, ?, ?, ?)",
-                                    (row[student_id_index], row[old_column_names.index('subject')], 
-                                     row[old_column_names.index('date')], row[old_column_names.index('time')])
-                                )
-                            except Exception as e:
-                                logger.error(f"Error migrating attendance record: {e}")
-                    
-                logger.info("Attendance table structure updated successfully")
             
             # Create subjects table if it doesn't exist
             self.cursor.execute('''
@@ -435,7 +378,7 @@ class DatabaseHandler:
             student_id (str, optional): Filter by student enrollment ID
             
         Returns:
-            pandas.DataFrame: DataFrame with attendance records
+            dict: Dictionary mapping file names to pandas DataFrames with attendance data
         """
         try:
             # Build query
@@ -470,20 +413,32 @@ class DatabaseHandler:
             # Add order by
             query += " ORDER BY a.date DESC, a.time DESC"
             
-            # Get records as a DataFrame directly
+            # Get records
             df = pd.read_sql_query(query, self.conn, params=params)
-            return df
             
+            if df.empty:
+                return {}
+                
+            # Group by subject and date
+            records = {}
+            for subject_name, subject_df in df.groupby("Subject"):
+                # Create a filename for each group
+                date_str = subject_df["Date"].iloc[0]
+                time_str = subject_df["Time"].iloc[0]
+                file_name = f"{subject_name}_{date_str}_{time_str}.csv"
+                records[file_name] = subject_df
+                
+            return records
         except sqlite3.Error as e:
             logger.error(f"Error getting attendance records: {e}")
-            return pd.DataFrame()
+            return {}
     
     def get_all_attendance_records(self):
         """
         Get all attendance records
         
         Returns:
-            pandas.DataFrame: DataFrame with all attendance records
+            dict: Dictionary mapping file names to pandas DataFrames with attendance data
         """
         return self.get_attendance_records()
     

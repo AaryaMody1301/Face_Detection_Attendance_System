@@ -182,14 +182,3 @@ class SimpleAuthSystem:
             
         logger.warning(f"Failed password change attempt for user: {username}")
         return False
-
-# Alias SimpleAuthSystem as SimpleAuth for backward compatibility
-# This class is used in modern_app.py
-class SimpleAuth(SimpleAuthSystem):
-    """Alias for SimpleAuthSystem for backward compatibility"""
-    def __init__(self):
-        super().__init__()
-        
-    def is_authenticated(self):
-        """Alias for is_logged_in for interface compatibility"""
-        return self.is_logged_in()

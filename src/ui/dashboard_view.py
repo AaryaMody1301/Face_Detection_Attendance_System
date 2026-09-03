@@ -45,7 +45,7 @@ class DashboardView(ctk.CTkFrame):
         ).grid(row=0, column=0, sticky="w", padx=20, pady=(18, 4))
         ctk.CTkLabel(
             header,
-            text=datetime.now().strftime("%A, %B %d, %Y"),
+            text=datetime.now().astimezone().strftime("%A, %B %d, %Y"),
             text_color=("gray50", "gray70"),
         ).grid(row=1, column=0, sticky="w", padx=20, pady=(0, 18))
         ctk.CTkButton(
@@ -140,7 +140,7 @@ class DashboardView(ctk.CTkFrame):
         try:
             snapshot = build_dashboard_snapshot(self.db, trend_period=self.trend_period)
             self._render_snapshot(snapshot)
-        except Exception as exc:  # noqa: BLE001 - UI boundary
+        except Exception as exc:
             logger.exception("Could not refresh dashboard")
             self._render_error(str(exc))
 

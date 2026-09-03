@@ -1,8 +1,9 @@
-"""Fail when runtime identity, biometric, attendance, or credential data is tracked."""
+"""Fail when unsafe runtime data or production placeholders are tracked."""
 from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
 FORBIDDEN_PREFIXES = (
     "Attendance/",
@@ -21,18 +22,23 @@ FORBIDDEN_EXACT = {
     "src/models/face_recognizer.yml",
 }
 FORBIDDEN_SUFFIXES = (".db", ".sqlite", ".sqlite3")
+FORBIDDEN_SOURCE_SNIPPETS = {
+    'auth_system.login("admin", "admin")': "test-only automatic admin login",
+    "aws_access_key='your-access-key'": "placeholder AWS credential",
+    "aws_secret_key='your-secret-key'": "placeholder AWS credential",
+    "from src.utils.cloud_sync import CloudSync": "retired cloud integration import",
+}
 
 
 def tracked_files() -> list[str]:
-    result = subprocess.run(
-        ["git", "ls-files"], check=True, capture_output=True, text=True
-    )
+    result = subprocess.run(["git", "ls-files"], check=True, capture_output=True, text=True)
     return [line.strip().replace("\\", "/") for line in result.stdout.splitlines() if line.strip()]
 
 
 def main() -> int:
     violations: list[str] = []
-    for path in tracked_files():
+    tracked = tracked_files()
+    for path in tracked:
         if path in FORBIDDEN_EXACT:
             violations.append(path)
             continue
@@ -42,9 +48,20 @@ def main() -> int:
         if path.lower().endswith(FORBIDDEN_SUFFIXES):
             violations.append(path)
 
+    for path in tracked:
+        if not path.endswith((".py", ".json", ".yml", ".yaml")):
+            continue
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for snippet, reason in FORBIDDEN_SOURCE_SNIPPETS.items():
+            if snippet in text:
+                violations.append(f"{path}: {reason}")
+
     if violations:
-        print("Repository hygiene check failed. Remove these tracked runtime-data files:")
-        for path in violations:
+        print("Repository hygiene check failed:")
+        for path in sorted(set(violations)):
             print(f"  - {path}")
         return 1
 

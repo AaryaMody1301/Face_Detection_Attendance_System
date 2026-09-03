@@ -1,109 +1,52 @@
 {
-    "app_name": "Face Detection Attendance System",
-    "theme": "default",
-    "log_level": "INFO",
-    "camera": {
-        "id": 0,
-        "resolution": "(1280, 720)",
-        "fps": 30,
-        "device_id": 0,
-        "flip_image": false,
-        "auto_focus": true,
-        "auto_exposure": true
+  "app": {
+    "name": "Face Detection Attendance System",
+    "version": "1.5.0"
+  },
+  "ui": {
+    "type": "modern",
+    "theme": "system",
+    "color_theme": "blue",
+    "font_size": "medium",
+    "animations": true
+  },
+  "camera": {
+    "device_id": 0,
+    "id": 0,
+    "resolution": {
+      "width": 640,
+      "height": 480
     },
-    "face_detection": {
-        "confidence_threshold": 0,
-        "recognition_buffer_size": 5,
-        "min_recognized_frames": 3,
-        "show_recognition_confidence": true,
-        "show_bounding_box": true,
-        "late_threshold_seconds": 300,
-        "min_face_size": 30,
-        "max_faces": 20,
-        "processing_scale": 0.75,
-        "stabilization": true,
-        "stabilization_frames": 5,
-        "detection_method": "auto",
-        "recognition_method": "hybrid",
-        "scale_factor": 0.5
-    },
-    "attendance": {
-        "default_subject": "CS101",
-        "auto_backup": true,
-        "attendance_directory": "Attendance",
-        "auto_export_csv": true,
-        "duplicate_timeout": 600
-    },
-    "ui": {
-        "font_family": "Helvetica",
-        "title_font_size": 16,
-        "normal_font_size": 12,
-        "window_width": 1024,
-        "window_height": 768,
-        "fullscreen": false,
-        "show_status_bar": true,
-        "theme": "dark",
-        "font_size": "medium",
-        "animations": true,
-        "type": "modern",
-        "remember_last_UI": true,
-        "color_theme": "purple"
-    },
-    "face_recognition": {
-        "detection_model": "hog",
-        "scale_factor": 0.5,
-        "recognition_threshold": 0.6,
-        "min_face_size": 30,
-        "max_faces": 10,
-        "stabilization_frames": 3,
-        "method": "hybrid",
-        "threshold": 0.6,
-        "multi_detection": true
-    },
-    "video": {
-        "width": 640,
-        "height": 480,
-        "fps": 30,
-        "buffer_size": 3
-    },
-    "database": {
-        "connection_pool_size": 10,
-        "timeout": 30,
-        "backup_enabled": true,
-        "backup_interval_days": 7,
-        "path": "attendance.db",
-        "backup": {
-            "enabled": true,
-            "interval_days": 7,
-            "max_backups": 5
-        }
-    },
-    "memory": {
-        "performance_monitoring": false,
-        "auto_gc": true
-    },
-    "performance_profile": "high",
-    "data_paths": {
-        "attendance": "Attendance",
-        "training_images": "TrainingImage",
-        "student_details": "StudentDetails"
-    },
-    "advanced": {
-        "debug_mode": false,
-        "memory_management": "auto",
-        "log_level": "info"
-    },
-    "app": {
-        "name": "Face Detection Attendance System",
-        "version": "1.0.0"
-    },
-    "paths": {
-        "training_images": "TrainingImage",
-        "attendance_records": "Attendance",
-        "student_details": "StudentDetails"
-    },
-    "training": {
-        "max_images": 50,
-        "interval": 0.5
-    }
+    "fps": 30
+  },
+  "face_detection": {
+    "detection_method": "yunet",
+    "confidence_threshold": 0.9,
+    "min_face_size": 20
+  },
+  "face_recognition": {
+    "method": "sface",
+    "threshold": 0.363,
+    "multi_detection": true
+  },
+  "liveness": {
+    "enabled": true,
+    "threshold": 0.5,
+    "window": 5,
+    "required_live_frames": 3
+  },
+  "attendance": {
+    "auto_export_csv": true,
+    "duplicate_timeout": 600,
+    "default_subject": "General"
+  },
+  "backup": {
+    "auto_backup": true,
+    "frequency_days": 7,
+    "retention_days": 30
+  },
+  "training": {
+    "max_images": 50,
+    "interval": 0.5
+  }
 }

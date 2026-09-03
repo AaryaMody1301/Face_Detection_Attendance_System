@@ -88,6 +88,8 @@ jobs:
             label: windows-x64
           - os: macos-latest
             label: macos-arm64
+          - os: macos-15-intel
+            label: macos-x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7

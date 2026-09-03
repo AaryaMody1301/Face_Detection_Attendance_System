@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  quality:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -26,6 +26,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libgl1
       - name: Install project
         run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+      - name: Run headless diagnostics
+        run: python main.py --diagnostics
       - name: Check OpenCV face APIs
         run: >-
           python -c "import cv2; assert hasattr(cv2, 'FaceDetectorYN');
@@ -38,6 +40,8 @@ jobs:
           python -m ruff check
           main.py scripts
           src/core/paths.py
+          src/core/runtime.py
+          src/core/camera.py
           src/core/face_models.py
           src/core/face_engine.py
           src/core/liveness.py
@@ -64,8 +68,41 @@ jobs:
           tests/test_detector.py
           tests/test_face_engine.py
           tests/test_liveness.py
+          tests/test_camera.py
+          tests/test_runtime.py
           tests/test_db_handler.py
           tests/test_repository.py
           tests/test_ui_adapters.py
       - name: Run tests
         run: python -m pytest -q
+
+  package-smoke:
+    name: package-${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux-x64
+          - os: windows-latest
+            label: windows-x64
+          - os: macos-latest
+            label: macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install Linux runtime dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgl1
+      - name: Install project
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+      - name: Run platform regression tests
+        run: python -m pytest -q tests/test_camera.py tests/test_runtime.py tests/test_face_engine.py tests/test_liveness.py
+      - name: Build one-folder application
+        run: python -m PyInstaller --clean --noconfirm face_attendance.spec
+      - name: Smoke-test packaged diagnostics
+        run: python scripts/smoke_package.py

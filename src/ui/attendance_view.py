@@ -12,7 +12,7 @@ from src.core.database.compat_exports import export_legacy_student_csvs
 from src.core.database.service import DatabaseService
 from src.core.face_engine import DEFAULT_GALLERY_PATH, FaceEngine
 from src.core.face_models import ModelUnavailableError
-from src.ui.legacy_attendance_view import AttendanceView as _LegacyAttendanceView
+from src.ui.legacy_face_compat import LegacyAttendanceView as _LegacyAttendanceView
 
 
 def _local_now() -> datetime:

@@ -1,92 +1,53 @@
-"""
-Command-line script for viewing attendance records.
-"""
-import os
-import argparse
-import pandas as pd
-import logging
-from tabulate import tabulate
-from datetime import datetime
+"""View SQLite-backed attendance records from the command line."""
+from __future__ import annotations
 
+import argparse
+import logging
+from datetime import UTC, datetime
+from pathlib import Path
+
+from src.core.paths import ATTENDANCE_EXPORTS_DIR
 from src.database.db_handler import AttendanceDB
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 
-def view_attendance(subject=None, date=None, export=None):
-    """
-    View attendance records.
-    
-    Args:
-        subject (str, optional): Filter by subject
-        date (str, optional): Filter by date (YYYY-MM-DD)
-        export (bool, optional): Export to CSV file
-        
-    Returns:
-        dict: Dictionary of attendance records
-    """
+def view_attendance(subject: str | None = None, date: str | None = None, export: bool = False):
     db = AttendanceDB()
-    attendance_records = db.get_attendance_records(subject, date)
-    
-    if not attendance_records:
-        logger.info("No attendance records found.")
-        return None
-    
-    logger.info(f"Found {len(attendance_records)} attendance records.")
-    
-    # Display each attendance record
-    for filename, df in attendance_records.items():
-        logger.info(f"\n{'-' * 80}")
-        logger.info(f"File: {filename}")
-        logger.info(f"{'-' * 80}")
-        
-        if df.empty:
-            logger.info("No attendance data found.")
-            continue
-        
-        # Print the data
-        print(tabulate(df, headers="keys", tablefmt="grid", showindex=False))
-        
-        # Calculate statistics
-        student_count = len(df['Enrollment'].unique())
-        logger.info(f"\nTotal Students: {student_count}")
-        
-        # Export if requested
-        if export:
-            export_dir = "Exports"
-            os.makedirs(export_dir, exist_ok=True)
-            
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            export_file = os.path.join(export_dir, f"{os.path.splitext(filename)[0]}_{timestamp}.csv")
-            
-            df.to_csv(export_file, index=False)
-            logger.info(f"Exported to {export_file}")
-    
-    return attendance_records
+    try:
+        attendance_records = db.get_attendance_records(subject=subject, date=date)
+        if not attendance_records:
+            logger.info("No attendance records found")
+            return None
+
+        for filename, dataframe in attendance_records.items():
+            print(f"\n{'-' * 80}\n{filename}\n{'-' * 80}")
+            print(dataframe.to_string(index=False))
+            print(f"\nTotal Students: {dataframe['Enrollment'].nunique()}")
+
+            if export:
+                timestamp = datetime.now(UTC).astimezone().strftime("%Y%m%d_%H%M%S")
+                destination = ATTENDANCE_EXPORTS_DIR / "cli" / f"{Path(filename).stem}_{timestamp}.csv"
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                dataframe.to_csv(destination, index=False)
+                print(f"Exported: {destination}")
+        return attendance_records
+    finally:
+        db.close()
 
 
-def main_with_args(args):
-    """Run with parsed arguments from the main CLI."""
-    attendance_records = view_attendance(args.subject, args.date, args.export)
-    return 0 if attendance_records else 1
+def main_with_args(args: argparse.Namespace) -> int:
+    records = view_attendance(args.subject, args.date, args.export)
+    return 0 if records else 1
 
 
-def main():
-    """Main entry point for the script when run directly."""
+def main() -> int:
     parser = argparse.ArgumentParser(description="View attendance records")
-    parser.add_argument("--subject", type=str, help="Filter by subject")
-    parser.add_argument("--date", type=str, help="Filter by date (YYYY-MM-DD)")
-    parser.add_argument("--export", action="store_true", help="Export to CSV file")
-    
-    args = parser.parse_args()
-    
-    return main_with_args(args)
+    parser.add_argument("--subject", help="Filter by subject")
+    parser.add_argument("--date", help="Filter by date (YYYY-MM-DD)")
+    parser.add_argument("--export", action="store_true", help="Export matching rows to CSV")
+    return main_with_args(parser.parse_args())
 
 
 if __name__ == "__main__":
-    main() 
+    raise SystemExit(main())

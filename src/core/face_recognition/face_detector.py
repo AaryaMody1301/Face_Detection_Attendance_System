@@ -36,4 +36,4 @@ class FaceDetector(FaceEngine):
         return False
 
 
-__all__ = ["FaceEngine", "FaceDetector"]
+__all__ = ["FaceDetector", "FaceEngine"]

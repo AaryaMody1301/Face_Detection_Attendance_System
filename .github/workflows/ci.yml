@@ -47,5 +47,6 @@ jobs:
           tests/test_detector.py
           tests/test_db_handler.py
           tests/test_repository.py
+          tests/test_ui_adapters.py
       - name: Run tests
         run: python -m pytest -q

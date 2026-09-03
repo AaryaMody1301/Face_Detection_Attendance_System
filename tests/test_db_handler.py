@@ -1,7 +1,7 @@
 """Tests for the database handler module."""
 import os
 import tempfile
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pandas as pd
 import pytest
@@ -40,9 +40,10 @@ def test_add_student(temp_db):
 
 
 def test_create_attendance_record(temp_db):
+    now = datetime.now(UTC)
     subject = "TestSubject"
-    date = datetime.now().strftime("%Y-%m-%d")
-    time = datetime.now().strftime("%H-%M-%S")
+    date = now.strftime("%Y-%m-%d")
+    time = now.strftime("%H-%M-%S")
 
     file_path = temp_db.create_attendance_record(subject, date, time)
     assert file_path is not None
@@ -55,9 +56,10 @@ def test_create_attendance_record(temp_db):
 def test_mark_attendance(temp_db):
     temp_db.add_student("123", "Test Student")
 
+    now = datetime.now(UTC)
     subject = "TestSubject"
-    date = datetime.now().strftime("%Y-%m-%d")
-    time = datetime.now().strftime("%H-%M-%S")
+    date = now.strftime("%Y-%m-%d")
+    time = now.strftime("%H-%M-%S")
     file_path = temp_db.create_attendance_record(subject, date, time)
 
     success = temp_db.mark_attendance("123", "Test Student", file_path=file_path)

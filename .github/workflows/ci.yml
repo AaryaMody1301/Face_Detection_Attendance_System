@@ -44,6 +44,7 @@ jobs:
           src/database/sqlite_handler.py
           src/ui/attendance_view.py
           src/ui/student_registration.py
+          src/ui/training_view.py
           tests/test_detector.py
           tests/test_db_handler.py
           tests/test_repository.py

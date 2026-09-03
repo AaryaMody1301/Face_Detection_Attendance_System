@@ -47,6 +47,7 @@ StudentDetails/
 TrainingImage/
 TrainingImageLabel/
 backups/
+data/students.csv
 src/data/training_images/
 
 # Runtime databases and trained recognition artifacts

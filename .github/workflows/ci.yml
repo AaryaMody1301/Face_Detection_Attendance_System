@@ -29,7 +29,8 @@ jobs:
       - name: Check OpenCV face APIs
         run: >-
           python -c "import cv2; assert hasattr(cv2, 'FaceDetectorYN');
-          assert hasattr(cv2, 'FaceRecognizerSF')"
+          assert hasattr(cv2, 'FaceRecognizerSF'); assert hasattr(cv2, 'dnn');
+          assert hasattr(cv2.dnn, 'readNetFromONNX')"
       - name: Check repository hygiene
         run: python scripts/check_repository_hygiene.py
       - name: Run focused lint
@@ -39,6 +40,7 @@ jobs:
           src/core/paths.py
           src/core/face_models.py
           src/core/face_engine.py
+          src/core/liveness.py
           src/core/face_recognition/face_detector.py
           src/core/database/repository.py
           src/core/database/service.py
@@ -61,6 +63,7 @@ jobs:
           src/ui/training_view.py
           tests/test_detector.py
           tests/test_face_engine.py
+          tests/test_liveness.py
           tests/test_db_handler.py
           tests/test_repository.py
           tests/test_ui_adapters.py

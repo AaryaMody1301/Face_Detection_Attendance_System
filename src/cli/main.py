@@ -1,140 +1,73 @@
-"""
-Main entry point for the Face Detection Attendance System CLI.
-"""
+"""Unified command-line entry point for the attendance system."""
+from __future__ import annotations
+
 import argparse
-import sys
-from importlib import import_module
+
+from src.core.face_engine import DEFAULT_GALLERY_PATH, SFACE_COSINE_THRESHOLD
+from src.core.liveness import (
+    DEFAULT_LIVENESS_THRESHOLD,
+    DEFAULT_LIVENESS_WINDOW,
+    DEFAULT_REQUIRED_LIVE_FRAMES,
+)
+from src.core.paths import TRAINING_IMAGES_DIR, TRAINING_MODELS_DIR
+from src.core.version import get_version
 
 
-def main():
-    """Main entry point for the CLI."""
-    parser = argparse.ArgumentParser(
-        description="Face Detection Attendance System",
-        prog="attend",
-    )
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Face Detection Attendance System", prog="attend")
     parser.add_argument(
-        "--version", action="version", version="Face Detection Attendance System 1.0.0"
+        "--version",
+        action="version",
+        version=f"Face Detection Attendance System {get_version()}",
     )
+    subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers = parser.add_subparsers(dest="command", help="Command to run")
+    train = subparsers.add_parser("train", help="Build the local YuNet + SFace gallery")
+    train.add_argument("--training-dir", default=str(TRAINING_IMAGES_DIR))
+    train.add_argument("--model-dir", default=str(TRAINING_MODELS_DIR))
+    train.add_argument("--model-file", default="face_gallery.npz")
 
-    # Train command
-    train_parser = subparsers.add_parser("train", help="Train the face recognition model")
-    train_parser.add_argument(
-        "--training-dir",
-        type=str,
-        default="TrainingImage",
-        help="Directory containing training images",
-    )
-    train_parser.add_argument(
-        "--model-dir",
-        type=str,
-        default="TrainingImageLabel",
-        help="Directory to save the model",
-    )
-    train_parser.add_argument(
-        "--model-file",
-        type=str,
-        default="trainner.yml",
-        help="Filename for the model",
-    )
+    take = subparsers.add_parser("take", help="Take liveness-gated face attendance")
+    take.add_argument("subject")
+    take.add_argument("--model", default=str(DEFAULT_GALLERY_PATH))
+    take.add_argument("--threshold", type=float, default=SFACE_COSINE_THRESHOLD)
+    take.add_argument("--liveness-threshold", type=float, default=DEFAULT_LIVENESS_THRESHOLD)
+    take.add_argument("--liveness-frames", type=int, default=DEFAULT_REQUIRED_LIVE_FRAMES)
+    take.add_argument("--liveness-window", type=int, default=DEFAULT_LIVENESS_WINDOW)
+    take.add_argument("--camera", type=int, default=0)
+    take.add_argument("--no-window", action="store_true")
+    take.add_argument("--timeout", type=int, default=60)
+    take.add_argument("--late-threshold", type=int, default=300)
 
-    # Take attendance command
-    take_parser = subparsers.add_parser(
-        "take", help="Take attendance using face recognition"
-    )
-    take_parser.add_argument(
-        "subject", type=str, help="Subject name for the attendance record"
-    )
-    take_parser.add_argument(
-        "--model",
-        type=str,
-        default="TrainingImageLabel/trainner.yml",
-        help="Path to the trained model",
-    )
-    take_parser.add_argument(
-        "--threshold",
-        type=int,
-        default=50,
-        help="Threshold for face recognition confidence",
-    )
-    take_parser.add_argument(
-        "--no-window", action="store_true", help="Don't show the video window"
-    )
-    take_parser.add_argument(
-        "--timeout",
-        type=int,
-        default=60,
-        help="Timeout in seconds (0 for no timeout)",
-    )
+    view = subparsers.add_parser("view", help="View attendance records from SQLite")
+    view.add_argument("--subject")
+    view.add_argument("--date")
+    view.add_argument("--export", action="store_true")
 
-    # View attendance command
-    view_parser = subparsers.add_parser("view", help="View attendance records")
-    view_parser.add_argument("--subject", type=str, help="Filter by subject")
-    view_parser.add_argument("--date", type=str, help="Filter by date (YYYY-MM-DD)")
-    view_parser.add_argument(
-        "--export", action="store_true", help="Export to CSV file"
-    )
+    subparsers.add_parser("app", help="Start the supported modern desktop UI")
+    return parser
 
-    # Run app command
-    app_parser = subparsers.add_parser("app", help="Start the GUI application")
-    app_parser.add_argument(
-        "--modern", action="store_true", help="Use the modern UI with CustomTkinter"
-    )
 
-    args = parser.parse_args()
+def main() -> int:
+    args = _parser().parse_args()
+    if args.command == "app":
+        from src.ui.modern_launcher import launch_modern_ui
 
-    if not args.command:
-        parser.print_help()
-        return 0
+        return 0 if launch_modern_ui() else 1
+    if args.command == "train":
+        from src.cli.train import main_with_args
 
-    try:
-        if args.command == "app":
-            # Check if using modern UI
-            if hasattr(args, 'modern') and args.modern:
-                try:
-                    # Import the Modern UI module and start the application
-                    from src.ui.modern_app import FaceAttendanceModernApp
-                    import customtkinter as ctk
-                    
-                    root = ctk.CTk()
-                    app = FaceAttendanceModernApp(root)
-                    root.mainloop()
-                except ImportError as e:
-                    print(f"Error: {e}")
-                    print("CustomTkinter may not be installed. Install it with:")
-                    print("pip install customtkinter")
-                    return 1
-            else:
-                # Import the traditional UI module and start the application
-                from src.ui.app import FaceAttendanceApp
-                import tkinter as tk
+        return main_with_args(args)
+    if args.command == "take":
+        from src.cli.take_attendance import main_with_args
 
-                root = tk.Tk()
-                app = FaceAttendanceApp(root)
-                root.mainloop()
-            return 0
+        return main_with_args(args)
+    if args.command == "view":
+        from src.cli.view_attendance import main_with_args
 
-        # Import the appropriate module based on the command
-        module_name = f"src.cli.{args.command}_attendance"
-        if args.command == "train":
-            module_name = "src.cli.train"
-
-        module = import_module(module_name)
-        
-        # Remove the command from the args namespace
-        delattr(args, "command")
-        
-        # Call the main function of the module with the parsed arguments
-        return module.main_with_args(args)
-    
-    except KeyboardInterrupt:
-        print("\nOperation cancelled by user.")
-        return 1
-    except Exception as e:
-        print(f"Error: {e}")
-        return 1
+        return main_with_args(args)
+    return 2
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

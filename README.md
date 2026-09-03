@@ -1,183 +1,104 @@
 # Face Detection Attendance System
 
-A local-first facial-recognition attendance system built with Python, OpenCV, and customtkinter. Automatic attendance uses YuNet face detection, MiniFAS passive liveness checks, and SFace identity matching before a student can be marked present.
+A local-first desktop attendance system built with Python, OpenCV, and CustomTkinter. Automatic attendance uses **YuNet face detection → MiniFAS passive liveness → SFace identity matching → SQLite persistence**. Recognition, liveness, authentication, and attendance data all remain local; no paid recognition or cloud service is required.
 
-![Python Version](https://img.shields.io/badge/python-3.10--3.12-blue)
+![Python](https://img.shields.io/badge/python-3.11--3.12-blue)
+![Version](https://img.shields.io/badge/version-1.5.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![OpenCV](https://img.shields.io/badge/OpenCV-4.x-red)
-
-## Features
-
-- **Liveness-gated attendance**: Print and screen presentation attacks are checked before SFace identity matching
-- **YuNet + SFace recognition**: OpenCV-native face detection, alignment, embeddings, and cosine matching
-- **Temporal anti-spoofing**: A face must pass repeated MiniFAS liveness checks before automatic recognition is allowed
-- **Resilient camera capture**: Platform backend fallback plus automatic reconnect after repeated frame-read failures
-- **Student registration and training**: Capture images and build the local SFace gallery
-- **SQLite-first attendance data**: Attendance and student records use the local database; CSV files are compatibility exports
-- **Local model inference**: No cloud recognition API or paid service is required
-- **Native desktop bundles**: PyInstaller one-folder builds for Windows, macOS, and Linux
-- **Multi-platform CI**: Source and frozen-app smoke checks run on GitHub-hosted runners
-
-## Security model
-
-Automatic attendance follows this order:
-
-1. YuNet detects the face.
-2. MiniFASNet V2 + V1SE classify the face crop as live, paper spoof, or screen spoof.
-3. A short temporal gate requires repeated live results for the same spatial face track.
-4. Only after liveness passes does SFace compute and match the identity embedding.
-5. Attendance is stored with method `sface+liveness`.
-
-If the liveness models are unavailable or fail verification, automatic attendance fails closed. Manual attendance remains an explicit operator action.
-
-Passive RGB liveness reduces common printed-photo and screen-replay attacks, but it is not a certified biometric presentation-attack-detection system and should not be treated as equivalent to dedicated IR/depth hardware.
-
-## Screenshot
 
 <p align="center">
   <img src="docs/img/screenshot.png" alt="Face Detection Attendance System" width="80%">
 </p>
 
+## Production features
+
+- **YuNet + SFace** OpenCV-native face detection, alignment, embeddings, and cosine matching.
+- **MiniFASNetV2 + MiniFASNetV1SE liveness** before identity matching.
+- **Temporal liveness gate** requiring repeated live frames before automatic attendance is allowed.
+- **Single supported Modern UI**. The incomplete Classic/AWS path has been retired.
+- **Local authentication with no default password**. First launch creates the administrator interactively.
+- **Salted scrypt password storage** with migration of older local plaintext/SHA-256 records after a successful login.
+- **SQLite source of truth** with schema migration, foreign keys, WAL, transactions, and duplicate-attendance protection.
+- **WAL-safe local backups** using SQLite's online backup API plus config/enrollment state.
+- **Resilient cameras** with platform backend fallback and reconnect after repeated failed reads.
+- **Verified runtime model downloads** pinned by exact SHA-256 and byte size.
+- **Native PyInstaller bundles** for Windows x64, Linux x64, macOS ARM64, and macOS Intel x64.
+- **Frozen application self-tests** that import the supported UI/runtime surface instead of checking dependencies only.
+- **Tag/version release guard and GitHub artifact attestations** for published native archives.
+
+## Security model
+
+Automatic attendance follows this order:
+
+1. YuNet detects a face.
+2. MiniFAS classifies the face crop for common print/screen presentation attacks.
+3. A temporal gate requires repeated live results for the same spatial face track.
+4. Only then does SFace compute and match the identity embedding.
+5. Attendance is stored in SQLite with method `sface+liveness`.
+
+If liveness models are missing or fail verification, automatic attendance fails closed. Manual attendance remains an explicit operator action.
+
+Passive RGB liveness reduces common print/screen attacks, but it is not a certified biometric presentation-attack-detection system and is not equivalent to dedicated IR/depth hardware.
+
 ## Installation from source
 
-### Prerequisites
+Requirements:
 
-- Python 3.10, 3.11, or 3.12
-- Webcam (built-in or external)
-- Internet access once for the default model download, or locally preloaded model files
-
-### Steps
-
-1. Clone the repository:
-
-   ```bash
-   git clone https://github.com/AaryaMody1301/Face_Detection_Attendance_System.git
-   cd Face_Detection_Attendance_System
-   ```
-
-2. Create and activate a virtual environment:
-
-   ```bash
-   python -m venv venv
-   ```
-
-   Windows:
-
-   ```bash
-   venv\Scripts\activate
-   ```
-
-   macOS/Linux:
-
-   ```bash
-   source venv/bin/activate
-   ```
-
-3. Install the application:
-
-   ```bash
-   python -m pip install -e .
-   ```
-
-4. Optionally preload and verify all face models:
-
-   ```bash
-   python scripts/download_face_models.py
-   ```
-
-5. Run the application:
-
-   ```bash
-   python main.py
-   ```
-
-## Desktop bundles
-
-Tagged releases can produce native one-folder bundles for Windows, macOS, and Linux through `.github/workflows/release.yml`. PyInstaller builds on each target operating system rather than cross-compiling.
-
-To build on the current machine:
+- Python 3.11 or 3.12
+- A webcam for enrollment/attendance
+- Internet access once for default model downloads, or verified local ONNX model files
 
 ```bash
-python -m pip install -e ".[dev]"
-python -m PyInstaller --clean --noconfirm face_attendance.spec
-python scripts/smoke_package.py
+git clone https://github.com/AaryaMody1301/Face_Detection_Attendance_System.git
+cd Face_Detection_Attendance_System
+python -m venv venv
 ```
 
-The packaged executable supports headless diagnostics, which is also used by CI:
+Activate the environment.
+
+Windows:
 
 ```bash
-python main.py --diagnostics
-python main.py --version
+venv\Scripts\activate
 ```
 
-For tagged releases, push a version tag such as `v1.4.0`. The release workflow builds and smoke-tests each native bundle, archives it, and attaches the artifacts to the GitHub Release.
-
-## Runtime models
-
-Model binaries are not committed to this repository. The application downloads pinned copies and verifies exact file size and SHA-256 before use.
-
-- **YuNet** — face detection
-- **SFace** — face alignment, embeddings, and cosine matching
-- **MiniFASNetV2 + MiniFASNetV1SE** — passive print/screen anti-spoofing ensemble
-
-Offline installations can point to local model files with:
-
-- `FACE_YUNET_MODEL`
-- `FACE_SFACE_MODEL`
-- `FACE_LIVENESS_V2_MODEL`
-- `FACE_LIVENESS_V1SE_MODEL`
-
-See [MODEL_LICENSES.md](MODEL_LICENSES.md) for model provenance, hashes, and license notes.
-
-## Usage
-
-### Student registration and training
-
-1. Open the student registration/training area.
-2. Enter the student ID and name.
-3. Capture varied facial images with the webcam.
-4. Start training/enrollment.
-5. The application creates or updates the local `face_gallery.npz` SFace gallery.
-
-Legacy LBPH/dlib model files are not compatible with the SFace gallery and are not converted automatically.
-
-### Mark attendance
-
-1. Open Attendance.
-2. Select the subject/class.
-3. Start the camera.
-4. Keep the face clearly visible while the short liveness confirmation completes.
-5. A spoof result is blocked before identity matching. A live, enrolled face is then matched with SFace and marked automatically.
-6. If the camera disconnects temporarily, the capture layer retries the platform backend and attempts to reconnect automatically.
-7. Manual attendance remains available when operator review is required.
-
-### Command-line attendance
+macOS/Linux:
 
 ```bash
-python -m src.cli.take_attendance "Data Science" --camera 0
+source venv/bin/activate
 ```
 
-Useful controls include `--camera`, `--threshold`, `--liveness-threshold`, `--liveness-frames`, `--liveness-window`, `--timeout`, and `--late-threshold`.
+Install and validate:
 
-## Data and model locations
+```bash
+python -m pip install -e .
+python scripts/download_face_models.py
+python main.py --self-test
+python main.py
+```
 
-Source checkouts store mutable runtime data under `Data/` by default. Frozen desktop builds use the operating system's per-user application-data directory so installed applications do not need write access beside the executable.
+On the first GUI launch, the application asks you to create the first local administrator account. There is **no built-in admin password**.
 
-Typical packaged locations are:
+## Runtime data
+
+Source checkouts use `Data/` by default. Frozen bundles use the operating system's per-user application-data directory:
 
 - Windows: `%LOCALAPPDATA%\AaryaMody1301\FaceDetectionAttendanceSystem`
 - macOS: `~/Library/Application Support/FaceDetectionAttendanceSystem`
 - Linux: `~/.local/share/FaceDetectionAttendanceSystem`
 
-`FACE_ATTENDANCE_DATA_DIR` overrides the default on every platform.
+Override the location with `FACE_ATTENDANCE_DATA_DIR`.
 
-Important generated paths include:
+Important generated state:
 
 ```text
 <application-data>/
 ├── attendance.db
 ├── backups/
 ├── config/
+│   ├── config.json
+│   └── users.json
 ├── exports/
 ├── logs/
 ├── models/
@@ -187,64 +108,137 @@ Important generated paths include:
 └── training_images/
 ```
 
+Runtime identity, biometric, credential, attendance, and database files are ignored by Git and checked by CI repository-hygiene rules.
+
+## Model files
+
+Models are downloaded at runtime and verified before use:
+
+- YuNet — face detection
+- SFace — alignment, embeddings, cosine matching
+- MiniFASNetV2 + MiniFASNetV1SE — passive anti-spoofing ensemble
+
+Offline overrides:
+
+- `FACE_YUNET_MODEL`
+- `FACE_SFACE_MODEL`
+- `FACE_LIVENESS_V2_MODEL`
+- `FACE_LIVENESS_V1SE_MODEL`
+
+See [MODEL_LICENSES.md](MODEL_LICENSES.md) for provenance, hashes, and upstream license notes.
+
+## Usage
+
+### Enrollment
+
+1. Open student registration/training.
+2. Enter the student ID and name.
+3. Capture varied, clear face images.
+4. Build/update the SFace gallery.
+
+Legacy LBPH/dlib files are not converted into SFace embeddings; re-enroll when upgrading from those formats.
+
+### Attendance
+
+1. Open Attendance and select a subject.
+2. Start the camera.
+3. Keep the face clearly visible while the short liveness confirmation completes.
+4. Live enrolled faces are matched with SFace and recorded; spoof results are blocked before identity matching.
+5. If the camera disconnects, the capture layer attempts to reconnect automatically.
+
+### Command line
+
+Unified CLI:
+
+```bash
+python -m src.cli.main --version
+python -m src.cli.main train
+python -m src.cli.main take "Data Science" --camera 0
+python -m src.cli.main view --subject "Data Science" --export
+python -m src.cli.main app
+```
+
+The direct attendance command also exposes `--threshold`, `--liveness-threshold`, `--liveness-frames`, `--liveness-window`, `--timeout`, and `--late-threshold`.
+
+## Settings and backups
+
+The Modern UI settings page exposes only supported production controls:
+
+- appearance mode
+- camera ID/test
+- SFace cosine threshold
+- MiniFAS live threshold
+- temporal live-frame requirement
+- local backup creation/retention cleanup
+
+Backups use SQLite's backup API and include the current config, SFace/model state, and enrollment images when present.
+
 ## Diagnostics and performance
 
-Run a headless environment report:
+Headless environment report:
 
 ```bash
 python main.py --diagnostics
 ```
 
-It reports the app/Python/dependency versions, resource path, data path, frozen/source mode, and whether the data directory is writable.
+Full production import check without opening a GUI:
 
-Benchmark the real local camera pipeline after the models are available:
+```bash
+python main.py --self-test
+```
+
+Real-camera benchmark:
 
 ```bash
 python scripts/benchmark_pipeline.py --camera 0 --frames 120 --warmup 10
 ```
 
-The benchmark reports average and p95 pipeline latency, approximate pipeline FPS, detected-face count, camera reconnects, and camera read failures. Calibrate recognition/liveness thresholds and performance on the actual deployment cameras rather than relying only on development-machine results.
-
-## Troubleshooting
-
-- **Camera not working**: Ensure the webcam is connected and not in use by another application. The application automatically tries a platform-preferred backend and OpenCV's default backend.
-- **Camera disconnects during attendance**: The resilient capture layer attempts reconnection after repeated failed reads. Check `logs/app.log` if it cannot recover.
-- **Face not detected**: Improve lighting and keep the full face visible.
-- **Liveness unavailable**: Run `python scripts/download_face_models.py` while online or set the liveness model environment variables to verified local files.
-- **Spoof result on a real face**: Improve frontal lighting, reduce glare, avoid an overexposed display behind the face, and try again. Thresholds should be calibrated on the target cameras before deployment.
-- **Recognition issues**: Re-enroll the student with more varied, clear images.
-- **Packaged app fails to start**: Run the packaged executable with `--diagnostics` and inspect the per-user `logs/app.log` file.
+Use the benchmark and consented validation subjects to calibrate recognition/liveness thresholds on the actual deployment cameras and lighting.
 
 ## Development
 
-Install development dependencies:
-
 ```bash
 python -m pip install -e ".[dev]"
-```
-
-Run tests and lint:
-
-```bash
+python main.py --self-test
+python scripts/check_repository_hygiene.py
+python -m ruff check main.py scripts src tests
 python -m pytest -q
-python -m ruff check main.py tests scripts src/core/camera.py src/core/runtime.py src/core/paths.py
 ```
 
-Build and smoke-test the native bundle:
+CI runs source tests on Python 3.11 and 3.12, then builds and smoke-tests frozen bundles on:
+
+- Linux x64
+- Windows x64
+- macOS ARM64
+- macOS Intel x64
+
+## Desktop releases
+
+The release workflow lives at `.github/workflows/release.yml`. A release tag must exactly match the installed package version; for version 1.5.0 the tag is `v1.5.0`.
+
+Each native job builds the one-folder application, runs the frozen production self-test, archives the bundle, and—on tagged releases—creates a GitHub artifact attestation. GitHub Release publication occurs only after all native jobs succeed.
+
+Verify a downloaded archive:
 
 ```bash
-make package-smoke
+gh attestation verify <archive> -R AaryaMody1301/Face_Detection_Attendance_System
 ```
 
-CI additionally builds the frozen application on Windows, macOS, and Linux.
+Before publishing the first release, complete [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md), including real-camera and threshold validation.
+
+Windows Authenticode signing, Apple Developer ID signing/notarization, MSI installers, and DMG installers are not currently provided because they require external certificate/account infrastructure. The source application and unsigned native bundles remain usable without them.
+
+## Privacy
+
+See [docs/PRIVACY.md](docs/PRIVACY.md). Face images, embeddings, attendance records, and local user credentials are runtime data and must never be committed to the repository.
 
 ## License
 
-Application source code is licensed under the MIT License. Runtime model files have their own upstream licenses and attribution; see [MODEL_LICENSES.md](MODEL_LICENSES.md).
+Application source code is licensed under the MIT License. Runtime model files retain their upstream licenses; see [MODEL_LICENSES.md](MODEL_LICENSES.md).
 
 ## Acknowledgements
 
-- [OpenCV](https://opencv.org/) and OpenCV Zoo for YuNet and SFace
-- Minivision AI's Silent-Face-Anti-Spoofing project for the MiniFAS anti-spoofing architecture and weights
-- [yakhyo/face-anti-spoofing](https://github.com/yakhyo/face-anti-spoofing) for lightweight ONNX MiniFAS exports
-- [customtkinter](https://github.com/TomSchimansky/CustomTkinter) for UI components
+- OpenCV and OpenCV Zoo for YuNet and SFace
+- Minivision AI's Silent-Face-Anti-Spoofing work
+- yakhyo/face-anti-spoofing for lightweight ONNX MiniFAS exports
+- CustomTkinter for desktop UI components

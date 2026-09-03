@@ -7,6 +7,7 @@ from pathlib import Path
 
 from src.core.face_engine import FaceEngine
 from src.core.face_models import ModelUnavailableError
+from src.core.paths import TRAINING_IMAGES_DIR, TRAINING_MODELS_DIR
 
 logging.basicConfig(
     level=logging.INFO,
@@ -16,8 +17,8 @@ logger = logging.getLogger(__name__)
 
 
 def train_model(
-    training_dir: str = "TrainingImage",
-    model_dir: str = "TrainingImageLabel",
+    training_dir: str | Path = TRAINING_IMAGES_DIR,
+    model_dir: str | Path = TRAINING_MODELS_DIR,
     model_file: str = "face_gallery.npz",
 ) -> bool:
     """Build an SFace embedding gallery from the training directory."""
@@ -56,22 +57,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Train the YuNet + SFace face gallery")
     parser.add_argument(
         "--training-dir",
-        type=str,
-        default="TrainingImage",
+        default=str(TRAINING_IMAGES_DIR),
         help="Directory containing training images",
     )
     parser.add_argument(
         "--model-dir",
-        type=str,
-        default="TrainingImageLabel",
+        default=str(TRAINING_MODELS_DIR),
         help="Directory to save the gallery",
     )
-    parser.add_argument(
-        "--model-file",
-        type=str,
-        default="face_gallery.npz",
-        help="Gallery filename",
-    )
+    parser.add_argument("--model-file", default="face_gallery.npz", help="Gallery filename")
     return main_with_args(parser.parse_args())
 
 

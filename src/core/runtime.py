@@ -20,6 +20,21 @@ from src.core.paths import (
     PROJECT_ROOT,
     ensure_runtime_dirs,
 )
+from src.core.version import get_version
+
+SUPPORTED_APPLICATION_IMPORTS = (
+    "src.auth.auth_system",
+    "src.core.database.service",
+    "src.core.face_engine",
+    "src.core.liveness",
+    "src.ui.auth_gate",
+    "src.ui.attendance_view",
+    "src.ui.student_registration",
+    "src.ui.training_view",
+    "src.ui.settings",
+    "src.ui.modern_app",
+    "src.ui.modern_launcher",
+)
 
 
 def _copy_tree_if_available(source: Path, destination: Path) -> None:
@@ -37,13 +52,7 @@ def _copy_tree_if_available(source: Path, destination: Path) -> None:
 
 
 def prepare_runtime_environment() -> Path:
-    """Create writable runtime state and seed bundled read-only resources.
-
-    Frozen apps and explicit ``FACE_ATTENDANCE_DATA_DIR`` installs run with the
-    data directory as their working directory. That keeps retained legacy
-    relative writes inside the same per-user writable root while bundled assets
-    and the default config are copied there only when missing.
-    """
+    """Create writable runtime state and seed bundled read-only resources."""
     ensure_runtime_dirs()
 
     if IS_FROZEN or os.environ.get("FACE_ATTENDANCE_DATA_DIR"):
@@ -69,6 +78,21 @@ def _package_version(distribution: str, import_name: str | None = None) -> str:
         return "unknown"
 
 
+def application_import_self_test() -> dict[str, Any]:
+    """Import every supported production surface without opening a GUI."""
+    modules: dict[str, str] = {}
+    for module_name in SUPPORTED_APPLICATION_IMPORTS:
+        try:
+            importlib.import_module(module_name)
+            modules[module_name] = "ok"
+        except Exception as exc:  # noqa: BLE001 - diagnostic boundary
+            modules[module_name] = f"{type(exc).__name__}: {exc}"
+    return {
+        "ok": all(result == "ok" for result in modules.values()),
+        "modules": modules,
+    }
+
+
 def runtime_diagnostics() -> dict[str, Any]:
     """Return headless diagnostics suitable for support logs and CI smoke tests."""
     writable = False
@@ -82,7 +106,7 @@ def runtime_diagnostics() -> dict[str, Any]:
         probe.unlink(missing_ok=True)
 
     return {
-        "app_version": _package_version("face-detection-attendance-system"),
+        "app_version": get_version(),
         "python": platform.python_version(),
         "platform": platform.platform(),
         "architecture": platform.machine(),
@@ -102,4 +126,10 @@ def print_runtime_diagnostics() -> None:
     print(json.dumps(runtime_diagnostics(), indent=2, sort_keys=True))
 
 
-__all__ = ["prepare_runtime_environment", "print_runtime_diagnostics", "runtime_diagnostics"]
+__all__ = [
+    "SUPPORTED_APPLICATION_IMPORTS",
+    "application_import_self_test",
+    "prepare_runtime_environment",
+    "print_runtime_diagnostics",
+    "runtime_diagnostics",
+]

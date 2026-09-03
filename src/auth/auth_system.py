@@ -1,243 +1,310 @@
-"""
-Authentication system for Face Detection Attendance System
-"""
-import os
-import json
-import hashlib
-import logging
-from dataclasses import dataclass
-from typing import Dict, Optional
+"""Local authentication for the desktop attendance application."""
+from __future__ import annotations
 
-# Set up logging
+import base64
+import hashlib
+import json
+import logging
+import os
+import secrets
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from src.core.paths import CONFIG_DIR, ensure_runtime_dirs
+
 logger = logging.getLogger(__name__)
 
-@dataclass
+_PASSWORD_SCHEME = "scrypt-v1"
+_SCRYPT_N = 2**14
+_SCRYPT_R = 8
+_SCRYPT_P = 1
+_SCRYPT_DKLEN = 32
+_SCRYPT_MAXMEM = 64 * 1024 * 1024
+_MIN_PASSWORD_LENGTH = 10
+
+
+@dataclass(frozen=True)
 class AuthResult:
-    """Class to represent authentication results"""
+    """Result returned by user-management operations."""
+
     success: bool
     message: str
-    user_data: Optional[Dict] = None
+    user_data: dict[str, Any] | None = None
+
 
 class AuthSystem:
-    """Authentication system for user management and login"""
-    
-    def __init__(self):
-        """Initialize the authentication system"""
-        self.users_file = os.path.join("config", "users.json")
-        self.users = {}
+    """Single local authentication service used by the supported UI."""
+
+    def __init__(
+        self,
+        users_file: str | Path | None = None,
+        db_connection: Any | None = None,
+        require_login: bool = True,
+        **_: Any,
+    ) -> None:
+        del db_connection
+        ensure_runtime_dirs()
+        self.users_file = Path(users_file or (CONFIG_DIR / "users.json")).expanduser().resolve()
+        self.users_file.parent.mkdir(parents=True, exist_ok=True)
+        self.require_login = bool(require_login)
+        self.users: dict[str, dict[str, Any]] = {}
+        self.current_user: dict[str, Any] | None = None
         self._load_users()
-    
-    def _load_users(self):
-        """Load users from the users file"""
-        # Create config directory if it doesn't exist
-        os.makedirs(os.path.dirname(self.users_file), exist_ok=True)
-        
-        # Load users if the file exists
-        if os.path.exists(self.users_file):
-            try:
-                with open(self.users_file, 'r') as f:
-                    self.users = json.load(f)
-                logger.info(f"Loaded {len(self.users)} users from {self.users_file}")
-            except Exception as e:
-                logger.error(f"Error loading users from {self.users_file}: {e}")
-                self.users = {}
-        else:
-            logger.info(f"Users file {self.users_file} does not exist. Starting with empty users.")
+
+    @staticmethod
+    def _public_user(username: str, record: dict[str, Any]) -> dict[str, Any]:
+        hidden = {"password", "password_hash", "password_salt", "password_scheme"}
+        result = {key: value for key, value in record.items() if key not in hidden}
+        result["username"] = username
+        return result
+
+    def _load_users(self) -> None:
+        if not self.users_file.is_file():
             self.users = {}
-    
-    def _save_users(self):
-        """Save users to the users file"""
+            return
         try:
-            with open(self.users_file, 'w') as f:
-                json.dump(self.users, f, indent=2)
-            logger.info(f"Saved {len(self.users)} users to {self.users_file}")
+            payload = json.loads(self.users_file.read_text(encoding="utf-8"))
+            self.users = payload if isinstance(payload, dict) else {}
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.error("Could not load authentication state: %s", exc)
+            self.users = {}
+
+    def _save_users(self) -> bool:
+        temporary = self.users_file.with_suffix(self.users_file.suffix + ".tmp")
+        try:
+            temporary.write_text(json.dumps(self.users, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            os.replace(temporary, self.users_file)
             return True
-        except Exception as e:
-            logger.error(f"Error saving users to {self.users_file}: {e}")
+        except OSError as exc:
+            temporary.unlink(missing_ok=True)
+            logger.error("Could not save authentication state: %s", exc)
             return False
-    
-    def _hash_password(self, password: str) -> str:
-        """
-        Hash a password for secure storage
-        
-        Args:
-            password: The password to hash
-            
-        Returns:
-            str: The hashed password
-        """
-        # Simple SHA-256 hash for demonstration
-        # In a production environment, use a more secure method like bcrypt
-        return hashlib.sha256(password.encode()).hexdigest()
-    
-    def authenticate(self, username: str, password: str) -> AuthResult:
-        """
-        Authenticate a user with username and password
-        
-        Args:
-            username: The username
-            password: The password
-            
-        Returns:
-            AuthResult: The result of the authentication attempt
-        """
-        # Check if user exists
-        if username not in self.users:
-            logger.warning(f"Authentication failed for unknown user: {username}")
-            return AuthResult(success=False, message="Invalid username or password")
-        
-        # Check password
-        user = self.users[username]
-        hashed_password = self._hash_password(password)
-        
-        if hashed_password != user['password']:
-            logger.warning(f"Authentication failed for user: {username}")
-            return AuthResult(success=False, message="Invalid username or password")
-        
-        # Authentication successful
-        logger.info(f"Authentication successful for user: {username}")
-        
-        # Create a copy of user data without the password
-        user_data = {k: v for k, v in user.items() if k != 'password'}
-        
-        return AuthResult(
-            success=True,
-            message="Authentication successful",
-            user_data=user_data
+
+    @staticmethod
+    def _derive(password: str, salt: bytes) -> bytes:
+        return hashlib.scrypt(
+            password.encode("utf-8"),
+            salt=salt,
+            n=_SCRYPT_N,
+            r=_SCRYPT_R,
+            p=_SCRYPT_P,
+            maxmem=_SCRYPT_MAXMEM,
+            dklen=_SCRYPT_DKLEN,
         )
-    
-    def create_user(self, username: str, password: str, role: str = "user") -> AuthResult:
-        """
-        Create a new user
-        
-        Args:
-            username: The username
-            password: The password
-            role: User role (default: "user")
-            
-        Returns:
-            AuthResult: The result of the user creation
-        """
-        # Check if username already exists
-        if username in self.users:
-            logger.warning(f"User creation failed: username '{username}' already exists")
-            return AuthResult(success=False, message=f"Username '{username}' already exists")
-        
-        # Create the user
-        self.users[username] = {
-            'password': self._hash_password(password),
-            'role': role,
-            'created_at': 'auto'  # Would be datetime in a real implementation
-        }
-        
-        # Save users
-        if self._save_users():
-            logger.info(f"Created new user: {username} with role {role}")
-            return AuthResult(
-                success=True,
-                message=f"User '{username}' created successfully",
-                user_data={'username': username, 'role': role}
-            )
-        else:
-            # Revert changes if save failed
-            del self.users[username]
-            logger.error(f"User creation failed: could not save users")
-            return AuthResult(success=False, message="Could not save user data")
-    
-    def update_user(self, username: str, new_data: Dict) -> AuthResult:
-        """
-        Update user data
-        
-        Args:
-            username: The username
-            new_data: New user data
-            
-        Returns:
-            AuthResult: The result of the user update
-        """
-        # Check if user exists
-        if username not in self.users:
-            logger.warning(f"User update failed: username '{username}' does not exist")
-            return AuthResult(success=False, message=f"User '{username}' does not exist")
-        
-        # Update user data (except password)
-        user = self.users[username]
-        for key, value in new_data.items():
-            if key != 'password':
-                user[key] = value
-        
-        # Update password if provided
-        if 'password' in new_data:
-            user['password'] = self._hash_password(new_data['password'])
-        
-        # Save users
-        if self._save_users():
-            logger.info(f"Updated user: {username}")
-            return AuthResult(success=True, message=f"User '{username}' updated successfully")
-        else:
-            logger.error(f"User update failed: could not save users")
-            return AuthResult(success=False, message="Could not save user data")
-    
-    def delete_user(self, username: str) -> AuthResult:
-        """
-        Delete a user
-        
-        Args:
-            username: The username
-            
-        Returns:
-            AuthResult: The result of the user deletion
-        """
-        # Check if user exists
-        if username not in self.users:
-            logger.warning(f"User deletion failed: username '{username}' does not exist")
-            return AuthResult(success=False, message=f"User '{username}' does not exist")
-        
-        # Delete the user
-        del self.users[username]
-        
-        # Save users
-        if self._save_users():
-            logger.info(f"Deleted user: {username}")
-            return AuthResult(success=True, message=f"User '{username}' deleted successfully")
-        else:
-            logger.error(f"User deletion failed: could not save users")
-            return AuthResult(success=False, message="Could not save user data")
-    
-    def get_user(self, username: str) -> Optional[Dict]:
-        """
-        Get user data
-        
-        Args:
-            username: The username
-            
-        Returns:
-            Optional[Dict]: User data without password, or None if user doesn't exist
-        """
-        if username not in self.users:
-            return None
-        
-        # Create a copy of user data without the password
-        user = {k: v for k, v in self.users[username].items() if k != 'password'}
-        return user
-    
-    def get_all_users(self) -> Dict:
-        """
-        Get all users
-        
-        Returns:
-            Dict: All users without passwords
-        """
+
+    @classmethod
+    def _password_fields(cls, password: str) -> dict[str, Any]:
+        if len(password) < _MIN_PASSWORD_LENGTH:
+            raise ValueError(f"Password must be at least {_MIN_PASSWORD_LENGTH} characters long")
+        salt = os.urandom(16)
+        digest = cls._derive(password, salt)
         return {
-            username: {k: v for k, v in user.items() if k != 'password'}
-            for username, user in self.users.items()
+            "password_scheme": _PASSWORD_SCHEME,
+            "password_salt": base64.b64encode(salt).decode("ascii"),
+            "password_hash": base64.b64encode(digest).decode("ascii"),
         }
-    
+
+    @classmethod
+    def _verify_scrypt(cls, record: dict[str, Any], password: str) -> bool:
+        try:
+            salt = base64.b64decode(str(record["password_salt"]), validate=True)
+            expected = base64.b64decode(str(record["password_hash"]), validate=True)
+        except (KeyError, ValueError):
+            return False
+        actual = cls._derive(password, salt)
+        return secrets.compare_digest(actual, expected)
+
+    @staticmethod
+    def _looks_like_sha256(value: str) -> bool:
+        if len(value) != 64:
+            return False
+        try:
+            int(value, 16)
+        except ValueError:
+            return False
+        return True
+
+    def _verify_and_migrate(self, username: str, password: str) -> bool:
+        record = self.users.get(username)
+        if record is None:
+            return False
+
+        if record.get("password_scheme") == _PASSWORD_SCHEME:
+            return self._verify_scrypt(record, password)
+
+        # Phase 1 removed committed credentials, but existing local installs may
+        # still carry the older SHA-256 or plaintext JSON formats. Accept them
+        # once, only after a correct password is supplied, then migrate in place.
+        legacy = record.get("password")
+        if not isinstance(legacy, str):
+            return False
+        if self._looks_like_sha256(legacy):
+            candidate = hashlib.sha256(password.encode("utf-8")).hexdigest()
+            valid = secrets.compare_digest(candidate, legacy)
+        else:
+            valid = secrets.compare_digest(password, legacy)
+        if not valid:
+            return False
+
+        record.pop("password", None)
+        record.update(self._password_fields(password))
+        if not self._save_users():
+            logger.warning("Authenticated legacy user %s but could not persist scrypt migration", username)
+        return True
+
+    def authenticate(self, username: str, password: str) -> AuthResult:
+        username = username.strip()
+        if not username or not self._verify_and_migrate(username, password):
+            return AuthResult(False, "Invalid username or password")
+        user = self._public_user(username, self.users[username])
+        return AuthResult(True, "Authentication successful", user)
+
+    def login(self, username: str, password: str) -> bool:
+        result = self.authenticate(username, password)
+        if not result.success:
+            return False
+        self.current_user = dict(result.user_data or {})
+        logger.info("User %s logged in", username)
+        return True
+
+    def logout(self) -> bool:
+        self.current_user = None
+        return True
+
+    def is_authenticated(self) -> bool:
+        return self.current_user is not None
+
+    def is_logged_in(self) -> bool:
+        return self.is_authenticated()
+
+    def get_current_user(self) -> dict[str, Any]:
+        return dict(self.current_user or {})
+
+    def _next_id(self) -> int:
+        identifiers = [int(user.get("id", 0) or 0) for user in self.users.values()]
+        return max(identifiers, default=0) + 1
+
+    def create_user(
+        self,
+        username: str,
+        password: str,
+        role: str = "user",
+        full_name: str | None = None,
+        email: str | None = None,
+        created_by: str | None = None,
+        **_: Any,
+    ) -> AuthResult:
+        username = username.strip()
+        if not username or not username.replace("_", "").isalnum():
+            return AuthResult(False, "Username may contain only letters, numbers, and underscores")
+        if username in self.users:
+            return AuthResult(False, "Username already exists")
+        if role not in {"admin", "teacher", "user"}:
+            return AuthResult(False, "Unsupported role")
+        try:
+            password_fields = self._password_fields(password)
+        except ValueError as exc:
+            return AuthResult(False, str(exc))
+
+        record: dict[str, Any] = {
+            "id": self._next_id(),
+            "role": role,
+            "full_name": full_name or username,
+            "created_at": datetime.now(UTC).isoformat(),
+            **password_fields,
+        }
+        if email:
+            record["email"] = email
+        if created_by:
+            record["created_by"] = created_by
+        self.users[username] = record
+        if not self._save_users():
+            self.users.pop(username, None)
+            return AuthResult(False, "Could not save user data")
+        return AuthResult(True, "User created", self._public_user(username, record))
+
+    def register(self, username: str, password: str, full_name: str, role: str = "user") -> bool:
+        return self.create_user(username, password, role=role, full_name=full_name).success
+
+    def update_user(self, username: str, new_data: dict[str, Any]) -> AuthResult:
+        record = self.users.get(username)
+        if record is None:
+            return AuthResult(False, "User does not exist")
+        for key in ("full_name", "email", "role"):
+            if key in new_data:
+                record[key] = new_data[key]
+        if "password" in new_data:
+            try:
+                record.update(self._password_fields(str(new_data["password"])))
+                record.pop("password", None)
+            except ValueError as exc:
+                return AuthResult(False, str(exc))
+        if not self._save_users():
+            return AuthResult(False, "Could not save user data")
+        return AuthResult(True, "User updated", self._public_user(username, record))
+
+    def _resolve_username(self, identifier: str | int) -> str | None:
+        if isinstance(identifier, str) and identifier in self.users:
+            return identifier
+        for username, record in self.users.items():
+            if record.get("id") == identifier:
+                return username
+        return None
+
+    def get_user(self, identifier: str | int) -> dict[str, Any] | None:
+        username = self._resolve_username(identifier)
+        if username is None:
+            return None
+        return self._public_user(username, self.users[username])
+
+    def get_all_users(self) -> dict[str, dict[str, Any]]:
+        return {username: self._public_user(username, record) for username, record in self.users.items()}
+
+    def delete_user(self, identifier: str | int) -> AuthResult:
+        username = self._resolve_username(identifier)
+        if username is None:
+            return AuthResult(False, "User does not exist")
+        if self.users[username].get("role") == "admin":
+            admins = [record for record in self.users.values() if record.get("role") == "admin"]
+            if len(admins) <= 1:
+                return AuthResult(False, "Cannot delete the only administrator")
+        self.users.pop(username)
+        if not self._save_users():
+            return AuthResult(False, "Could not save user data")
+        if self.current_user and self.current_user.get("username") == username:
+            self.logout()
+        return AuthResult(True, "User deleted")
+
+    def change_password(self, identifier: str | int, old_password: str, new_password: str) -> bool:
+        username = self._resolve_username(identifier)
+        if username is None or not self._verify_and_migrate(username, old_password):
+            return False
+        try:
+            self.users[username].update(self._password_fields(new_password))
+        except ValueError:
+            return False
+        self.users[username].pop("password", None)
+        return self._save_users()
+
     def check_if_any_user_exists(self) -> bool:
-        """
-        Check if any user exists
-        
-        Returns:
-            bool: True if at least one user exists, False otherwise
-        """
-        return len(self.users) > 0
+        return bool(self.users)
+
+    def has_permission(self, permission: str) -> bool:
+        user = self.current_user or {}
+        role = user.get("role")
+        if role == "admin":
+            return True
+        allowed = {
+            "teacher": {"take_attendance", "view_attendance", "manage_students"},
+            "user": {"view_attendance"},
+        }
+        return permission in allowed.get(str(role), set())
+
+    def login_as_default_user(self) -> bool:
+        """Guest/default authentication is intentionally disabled in production."""
+        return False
+
+
+__all__ = ["AuthResult", "AuthSystem"]

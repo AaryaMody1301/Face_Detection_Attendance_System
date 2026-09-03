@@ -1,4 +1,4 @@
-"""Fail when runtime identity, biometric, attendance, or credential data is tracked."""
+"""Fail when unsafe runtime data or retired production surfaces are tracked."""
 from __future__ import annotations
 
 import subprocess
@@ -19,14 +19,23 @@ FORBIDDEN_EXACT = {
     "config/users.json",
     "data/students.csv",
     "src/models/face_recognizer.yml",
+    "src/auth/auth_manager.py",
+    "src/auth/login_screen.py",
+    "src/ui/app.py",
+    "src/ui/classic_app.py",
+    "src/ui/classic_launcher.py",
+    "src/ui/login_screen.py",
+    "src/ui/login_window.py",
+    "src/ui/main_view.py",
+    "src/ui/ui_selector.py",
+    "src/utils/cloud_sync.py",
+    "src/utils/credentials_manager.py",
 }
 FORBIDDEN_SUFFIXES = (".db", ".sqlite", ".sqlite3")
 
 
 def tracked_files() -> list[str]:
-    result = subprocess.run(
-        ["git", "ls-files"], check=True, capture_output=True, text=True
-    )
+    result = subprocess.run(["git", "ls-files"], check=True, capture_output=True, text=True)
     return [line.strip().replace("\\", "/") for line in result.stdout.splitlines() if line.strip()]
 
 
@@ -43,8 +52,8 @@ def main() -> int:
             violations.append(path)
 
     if violations:
-        print("Repository hygiene check failed. Remove these tracked runtime-data files:")
-        for path in violations:
+        print("Repository hygiene check failed:")
+        for path in sorted(set(violations)):
             print(f"  - {path}")
         return 1
 

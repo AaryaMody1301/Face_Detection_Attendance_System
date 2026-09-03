@@ -1,4 +1,4 @@
-"""Run headless diagnostics against a PyInstaller build."""
+"""Run the production self-test against a PyInstaller build."""
 from __future__ import annotations
 
 import json
@@ -33,7 +33,7 @@ def main() -> int:
         result = subprocess.run(
             [
                 str(executable),
-                "--diagnostics",
+                "--self-test",
                 "--diagnostics-output",
                 str(diagnostics_path),
             ],
@@ -41,17 +41,29 @@ def main() -> int:
             timeout=90,
             check=False,
         )
+
+        diagnostics = None
+        if diagnostics_path.is_file():
+            diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+            print(json.dumps(diagnostics, indent=2, sort_keys=True))
+
         if result.returncode != 0:
-            print(
-                f"Packaged diagnostics failed with exit code {result.returncode}",
-                file=sys.stderr,
-            )
+            print(f"Packaged self-test failed with exit code {result.returncode}", file=sys.stderr)
+            if isinstance(diagnostics, dict):
+                imports = diagnostics.get("application_imports")
+                if isinstance(imports, dict):
+                    failed = {
+                        name: status
+                        for name, status in imports.get("modules", {}).items()
+                        if status != "ok"
+                    }
+                    if failed:
+                        print(f"Failed packaged imports: {failed}", file=sys.stderr)
             return result.returncode
-        if not diagnostics_path.is_file():
-            print("Packaged diagnostics did not create the output file", file=sys.stderr)
+        if diagnostics is None:
+            print("Packaged self-test did not create the output file", file=sys.stderr)
             return 1
 
-        diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
         required = {
             "app_version",
             "python",
@@ -62,6 +74,7 @@ def main() -> int:
             "data_root_writable",
             "opencv",
             "customtkinter",
+            "application_imports",
         }
         missing = sorted(required.difference(diagnostics))
         if missing:
@@ -73,8 +86,13 @@ def main() -> int:
         if diagnostics["data_root_writable"] is not True:
             print("Packaged data directory is not writable", file=sys.stderr)
             return 1
-
-        print(json.dumps(diagnostics, indent=2, sort_keys=True))
+        if diagnostics["app_version"] in {"unknown", "0.0.0", ""}:
+            print("Packaged application version metadata is missing", file=sys.stderr)
+            return 1
+        imports = diagnostics["application_imports"]
+        if not isinstance(imports, dict) or imports.get("ok") is not True:
+            print(f"Supported application imports failed: {imports}", file=sys.stderr)
+            return 1
     return 0
 
 

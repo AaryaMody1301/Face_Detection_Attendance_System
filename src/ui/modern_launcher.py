@@ -36,7 +36,7 @@ def launch_modern_ui() -> bool:
         app.mainloop()
         logger.info("Modern UI closed normally")
         return True
-    except Exception:  # noqa: BLE001 - top-level UI boundary
+    except Exception:
         logger.exception("Error launching modern UI")
         return False
 

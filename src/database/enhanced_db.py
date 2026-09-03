@@ -1,10 +1,10 @@
-"""Legacy EnhancedDB adapter for the canonical repository."""
+"""Legacy EnhancedDB adapter for the canonical database service."""
 
-from src.core.database.repository import AttendanceRepository
+from src.core.database.service import DatabaseService
 
 
-class EnhancedDB(AttendanceRepository):
-    """Backward-compatible name for :class:`AttendanceRepository`."""
+class EnhancedDB(DatabaseService):
+    """Backward-compatible name for :class:`DatabaseService`."""
 
 
 __all__ = ["EnhancedDB"]

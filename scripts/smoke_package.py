@@ -41,14 +41,29 @@ def main() -> int:
             timeout=90,
             check=False,
         )
+
+        diagnostics = None
+        if diagnostics_path.is_file():
+            diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+            print(json.dumps(diagnostics, indent=2, sort_keys=True))
+
         if result.returncode != 0:
             print(f"Packaged self-test failed with exit code {result.returncode}", file=sys.stderr)
+            if isinstance(diagnostics, dict):
+                imports = diagnostics.get("application_imports")
+                if isinstance(imports, dict):
+                    failed = {
+                        name: status
+                        for name, status in imports.get("modules", {}).items()
+                        if status != "ok"
+                    }
+                    if failed:
+                        print(f"Failed packaged imports: {failed}", file=sys.stderr)
             return result.returncode
-        if not diagnostics_path.is_file():
+        if diagnostics is None:
             print("Packaged self-test did not create the output file", file=sys.stderr)
             return 1
 
-        diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
         required = {
             "app_version",
             "python",
@@ -78,8 +93,6 @@ def main() -> int:
         if not isinstance(imports, dict) or imports.get("ok") is not True:
             print(f"Supported application imports failed: {imports}", file=sys.stderr)
             return 1
-
-        print(json.dumps(diagnostics, indent=2, sort_keys=True))
     return 0
 
 

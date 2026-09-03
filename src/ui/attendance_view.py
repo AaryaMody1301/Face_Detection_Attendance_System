@@ -11,6 +11,7 @@ from pathlib import Path
 from tkinter import messagebox
 from typing import Any
 
+from src.core.database.compat_exports import export_legacy_student_csvs
 from src.core.database.service import DatabaseService
 from src.ui.legacy_attendance_view import AttendanceView as _LegacyAttendanceView
 
@@ -20,6 +21,8 @@ class AttendanceView(_LegacyAttendanceView):
 
     def __init__(self, master=None, config=None, **kwargs: Any) -> None:
         self.database = DatabaseService()
+        # Prevent the legacy initializer from creating synthetic students.csv data.
+        export_legacy_student_csvs(self.database)
         super().__init__(master=master, config=config, **kwargs)
 
     def load_students(self) -> None:
@@ -78,7 +81,12 @@ class AttendanceView(_LegacyAttendanceView):
                     self.tree.insert(
                         "",
                         "end",
-                        values=(record["id"], record["name"], record["time"], record["confidence"]),
+                        values=(
+                            record["id"],
+                            record["name"],
+                            record["time"],
+                            record["confidence"],
+                        ),
                     )
 
             if hasattr(self, "save_button"):

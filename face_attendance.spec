@@ -1,12 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller one-folder build for the desktop attendance application."""
+"""PyInstaller one-folder build for the production desktop attendance application."""
+from importlib import metadata
 from pathlib import Path
 import sys
 
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, copy_metadata
 
 project_root = Path(SPECPATH).resolve()
-datas = []
+app_version = metadata.version("face-detection-attendance-system")
+datas = copy_metadata("face-detection-attendance-system")
 binaries = []
 hiddenimports = []
 
@@ -72,7 +74,7 @@ if sys.platform == "darwin":
         name="FaceAttendance.app",
         icon=None,
         bundle_identifier="io.github.aaryamody1301.faceattendance",
-        version="1.4.0",
+        version=app_version,
         info_plist={
             "NSCameraUsageDescription": (
                 "Camera access is required to recognize enrolled students and record attendance."

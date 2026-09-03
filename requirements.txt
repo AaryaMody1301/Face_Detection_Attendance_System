@@ -1,14 +1,1 @@
-opencv-contrib-python
-customtkinter
-pillow
-numpy
-pandas
-matplotlib
-scikit-learn
-face-recognition
-dlib
-tk
-ttkthemes
-tkcalendar
-python-dateutil
-pyyaml
+.

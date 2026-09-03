@@ -35,7 +35,7 @@ for directory in REQUIRED_DIRS:
 
 
 def check_dependencies() -> bool:
-    """Verify imports and the OpenCV APIs required by YuNet + SFace."""
+    """Verify imports and OpenCV APIs required by recognition and liveness."""
     required = {"cv2": "OpenCV", "customtkinter": "CustomTkinter"}
 
     ok = True
@@ -56,6 +56,9 @@ def check_dependencies() -> bool:
             if not hasattr(cv2, api_name):
                 logger.error("Installed OpenCV does not expose %s", api_name)
                 ok = False
+        if not hasattr(cv2, "dnn") or not hasattr(cv2.dnn, "readNetFromONNX"):
+            logger.error("Installed OpenCV does not expose DNN ONNX loading for liveness")
+            ok = False
 
     return ok
 
@@ -109,7 +112,7 @@ def show_splash_screen() -> None:
         "Checking dependencies...",
         "Initializing database...",
         "Preparing YuNet + SFace...",
-        "Preparing user interface...",
+        "Preparing liveness protection...",
         "Starting application...",
     ]
 

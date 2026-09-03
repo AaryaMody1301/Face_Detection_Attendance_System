@@ -41,6 +41,7 @@ jobs:
           src/database/db_manager.py
           src/database/enhanced_db.py
           src/database/sqlite_handler.py
+          src/ui/attendance_view.py
           tests/test_detector.py
           tests/test_db_handler.py
           tests/test_repository.py

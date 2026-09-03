@@ -11,7 +11,7 @@ def main() -> int:
     parser.add_argument("--tag", required=True, help="Release tag such as v1.5.0")
     args = parser.parse_args()
 
-    tag_version = args.tag[1:] if args.tag.startswith("v") else args.tag
+    tag_version = args.tag.removeprefix("v")
     package_version = get_version()
     if tag_version != package_version:
         print(f"Release version mismatch: tag={tag_version}, package={package_version}")

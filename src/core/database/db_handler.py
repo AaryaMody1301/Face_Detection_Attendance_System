@@ -1,5 +1,7 @@
-"""Compatibility import for the canonical database repository."""
+"""Compatibility import for the canonical database service."""
 
-from src.core.database.repository import AttendanceRepository, DatabaseHandler
+from src.core.database.service import DatabaseHandler, DatabaseService
 
-__all__ = ["AttendanceRepository", "DatabaseHandler"]
+AttendanceRepository = DatabaseService
+
+__all__ = ["AttendanceRepository", "DatabaseHandler", "DatabaseService"]

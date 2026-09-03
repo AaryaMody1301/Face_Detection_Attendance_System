@@ -143,7 +143,7 @@ class AnalyticsDashboard(ctk.CTkFrame):
                 state="normal" if not self.attendance_data.empty else "disabled"
             )
             self._render_chart()
-        except Exception as exc:  # noqa: BLE001 - UI boundary
+        except Exception as exc:
             logger.exception("Could not refresh analytics")
             self.summary_label.configure(text=f"Analytics refresh failed: {exc}")
             self.attendance_data = pd.DataFrame()
@@ -217,6 +217,6 @@ class AnalyticsDashboard(ctk.CTkFrame):
         if self._owns_database:
             try:
                 self.db.close()
-            except Exception:  # noqa: BLE001 - widget cleanup boundary
+            except Exception:
                 logger.exception("Could not close analytics database")
         super().destroy()

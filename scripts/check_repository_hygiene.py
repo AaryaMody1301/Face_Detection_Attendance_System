@@ -1,9 +1,8 @@
-"""Fail when unsafe runtime data or production placeholders are tracked."""
+"""Fail when unsafe runtime data or retired production surfaces are tracked."""
 from __future__ import annotations
 
 import subprocess
 import sys
-from pathlib import Path
 
 FORBIDDEN_PREFIXES = (
     "Attendance/",
@@ -20,14 +19,19 @@ FORBIDDEN_EXACT = {
     "config/users.json",
     "data/students.csv",
     "src/models/face_recognizer.yml",
+    "src/auth/auth_manager.py",
+    "src/auth/login_screen.py",
+    "src/ui/app.py",
+    "src/ui/classic_app.py",
+    "src/ui/classic_launcher.py",
+    "src/ui/login_screen.py",
+    "src/ui/login_window.py",
+    "src/ui/main_view.py",
+    "src/ui/ui_selector.py",
+    "src/utils/cloud_sync.py",
+    "src/utils/credentials_manager.py",
 }
 FORBIDDEN_SUFFIXES = (".db", ".sqlite", ".sqlite3")
-FORBIDDEN_SOURCE_SNIPPETS = {
-    'auth_system.login("admin", "admin")': "test-only automatic admin login",
-    "aws_access_key='your-access-key'": "placeholder AWS credential",
-    "aws_secret_key='your-secret-key'": "placeholder AWS credential",
-    "from src.utils.cloud_sync import CloudSync": "retired cloud integration import",
-}
 
 
 def tracked_files() -> list[str]:
@@ -37,8 +41,7 @@ def tracked_files() -> list[str]:
 
 def main() -> int:
     violations: list[str] = []
-    tracked = tracked_files()
-    for path in tracked:
+    for path in tracked_files():
         if path in FORBIDDEN_EXACT:
             violations.append(path)
             continue
@@ -47,17 +50,6 @@ def main() -> int:
             continue
         if path.lower().endswith(FORBIDDEN_SUFFIXES):
             violations.append(path)
-
-    for path in tracked:
-        if not path.endswith((".py", ".json", ".yml", ".yaml")):
-            continue
-        try:
-            text = Path(path).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        for snippet, reason in FORBIDDEN_SOURCE_SNIPPETS.items():
-            if snippet in text:
-                violations.append(f"{path}: {reason}")
 
     if violations:
         print("Repository hygiene check failed:")

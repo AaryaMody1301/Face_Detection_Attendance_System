@@ -1,0 +1,17 @@
+# Direct release constraints for reproducible CI/native builds.
+# Keep these synchronized with pyproject.toml and update them through reviewed PRs.
+opencv-contrib-python==4.13.0.92
+customtkinter==6.0.0
+Pillow==12.3.0
+numpy==2.4.6
+pandas==3.0.5
+matplotlib==3.11.1
+scikit-learn==1.9.0
+platformdirs==4.11.3
+ttkthemes==3.3.0
+tkcalendar==1.6.1
+python-dateutil==2.9.0.post0
+PyYAML==6.0.3
+pytest==9.1.1
+ruff==0.16.5
+pyinstaller==6.22.2

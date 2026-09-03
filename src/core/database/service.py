@@ -159,7 +159,7 @@ class DatabaseService(AttendanceRepository):
                 "top_subjects": {},
             }
         return {
-            "total_attendance": int(len(df)),
+            "total_attendance": len(df),
             "unique_students": int(df["Enrollment"].nunique()),
             "attendance_by_date": {
                 str(key): int(value) for key, value in df.groupby("Date").size().items()

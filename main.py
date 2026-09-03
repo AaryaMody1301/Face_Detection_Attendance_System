@@ -210,8 +210,8 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         logger.info("Application terminated by user")
         return 0
-    except Exception as exc:  # noqa: BLE001 - top-level boundary logs unexpected startup failures.
-        logger.exception("Error starting application: %s", exc)
+    except Exception:
+        logger.exception("Error starting application")
         return 1
     return 0
 

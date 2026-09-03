@@ -17,6 +17,7 @@ FORBIDDEN_EXACT = {
     "attendance.db",
     "config/credentials.json",
     "config/users.json",
+    "data/students.csv",
     "src/models/face_recognizer.yml",
 }
 FORBIDDEN_SUFFIXES = (".db", ".sqlite", ".sqlite3")

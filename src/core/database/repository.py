@@ -5,7 +5,6 @@ for compatibility with older UI/CLI flows.
 """
 from __future__ import annotations
 
-import csv
 import logging
 import sqlite3
 import threading
@@ -129,7 +128,6 @@ class AttendanceRepository:
 
     def _migrate_schema(self) -> None:
         """Migrate known legacy schemas to the canonical schema atomically."""
-        version = self.conn.execute("PRAGMA user_version").fetchone()[0]
         attendance_cols = {
             row[1] for row in self.conn.execute("PRAGMA table_info(attendance)").fetchall()
         } if self._table_exists("attendance") else set()

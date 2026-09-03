@@ -1,37 +1,52 @@
 """Face Detection Attendance System - main entry point."""
 from __future__ import annotations
 
+import argparse
 import importlib
 import logging
 import sys
 import traceback
-from pathlib import Path
+from importlib import metadata
 
-BASE_DIR = Path(__file__).resolve().parent
-LOG_DIR = BASE_DIR / "logs"
-LOG_DIR.mkdir(parents=True, exist_ok=True)
+from src.core.paths import LOGS_DIR, PROJECT_ROOT
+from src.core.runtime import prepare_runtime_environment, print_runtime_diagnostics
+
+BASE_DIR = PROJECT_ROOT
+prepare_runtime_environment()
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(LOG_DIR / "app.log"),
+        logging.FileHandler(LOGS_DIR / "app.log"),
     ],
 )
 logger = logging.getLogger(__name__)
 
-REQUIRED_DIRS = (
-    "TrainingImage",
-    "TrainingImageLabel",
-    "Attendance",
-    "Data",
-    "StudentDetails",
-    "backups",
-    "config",
-)
-for directory in REQUIRED_DIRS:
-    (BASE_DIR / directory).mkdir(parents=True, exist_ok=True)
+
+def _app_version() -> str:
+    try:
+        return metadata.version("face-detection-attendance-system")
+    except metadata.PackageNotFoundError:
+        return "1.4.0"
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Face Detection Attendance System")
+    parser.add_argument("--version", action="store_true", help="Print the application version and exit")
+    parser.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="Run headless dependency/runtime diagnostics and exit",
+    )
+    parser.add_argument(
+        "--ui",
+        choices=("modern", "classic"),
+        help="Start a specific UI without showing the UI selector",
+    )
+    return parser.parse_args(argv)
 
 
 def check_dependencies() -> bool:
@@ -129,8 +144,19 @@ def show_splash_screen() -> None:
     root.mainloop()
 
 
-def main() -> int:
-    """Start the desktop application."""
+def main(argv: list[str] | None = None) -> int:
+    """Start the desktop application or run a headless support command."""
+    args = parse_args(argv)
+
+    if args.version:
+        print(_app_version())
+        return 0
+
+    if args.diagnostics:
+        dependencies_ok = check_dependencies()
+        print_runtime_diagnostics()
+        return 0 if dependencies_ok else 1
+
     try:
         if str(BASE_DIR) not in sys.path:
             sys.path.insert(0, str(BASE_DIR))
@@ -141,12 +167,12 @@ def main() -> int:
 
         show_splash_screen()
 
-        models_dir = BASE_DIR / "models"
-        models_dir.mkdir(exist_ok=True)
+        if args.ui:
+            ui_type = args.ui
+        else:
+            from src.ui.ui_selector import select_ui
 
-        from src.ui.ui_selector import select_ui
-
-        ui_type = select_ui()
+            ui_type = select_ui()
         logger.info("Selected UI type: %s", ui_type)
 
         if ui_type.lower() == "modern":

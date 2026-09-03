@@ -1,6 +1,6 @@
 # Direct release constraints for reproducible CI/native builds.
 # Keep these synchronized with pyproject.toml and update them through reviewed PRs.
-opencv-contrib-python==4.13.0.92
+opencv-contrib-python==5.0.0.93
 customtkinter==6.0.0
 Pillow==12.3.0
 numpy==2.4.6

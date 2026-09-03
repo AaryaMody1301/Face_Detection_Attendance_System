@@ -35,7 +35,7 @@ def test_add_student(temp_db):
 
     df = temp_db.get_student_details()
     assert not df.empty
-    assert "123" in df["Enrollment"].values
+    assert "123" in df["Enrollment"].astype(str).values
     assert "Test Student" in df["Name"].values
 
 
@@ -67,5 +67,5 @@ def test_mark_attendance(temp_db):
 
     df = pd.read_csv(file_path)
     assert not df.empty
-    assert "123" in df["Enrollment"].values
+    assert "123" in df["Enrollment"].astype(str).values
     assert "Test Student" in df["Name"].values

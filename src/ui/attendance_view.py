@@ -1,9 +1,4 @@
-"""Database-backed public AttendanceView.
-
-The original UI/camera implementation is preserved in ``legacy_attendance_view``.
-This subclass routes all student reads and attendance persistence through the
-canonical SQLite service so CSV files are exports only.
-"""
+"""Database-backed attendance UI using the canonical YuNet + SFace engine."""
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -11,8 +6,12 @@ from pathlib import Path
 from tkinter import messagebox
 from typing import Any
 
+import cv2
+
 from src.core.database.compat_exports import export_legacy_student_csvs
 from src.core.database.service import DatabaseService
+from src.core.face_engine import DEFAULT_GALLERY_PATH, FaceEngine
+from src.core.face_models import ModelUnavailableError
 from src.ui.legacy_attendance_view import AttendanceView as _LegacyAttendanceView
 
 
@@ -22,13 +21,14 @@ def _local_now() -> datetime:
 
 
 class AttendanceView(_LegacyAttendanceView):
-    """Legacy visual surface with canonical database persistence."""
+    """Legacy visual surface with canonical persistence and face recognition."""
 
     def __init__(self, master=None, config=None, **kwargs: Any) -> None:
         self.database = DatabaseService()
-        # Prevent the legacy initializer from creating synthetic students.csv data.
+        self.face_engine = FaceEngine()
         export_legacy_student_csvs(self.database)
         super().__init__(master=master, config=config, **kwargs)
+        self.has_recognition_model = self.face_engine.load_model(DEFAULT_GALLERY_PATH)
 
     def load_students(self) -> None:
         """Populate the recognition lookup from SQLite instead of students.csv."""
@@ -54,12 +54,76 @@ class AttendanceView(_LegacyAttendanceView):
         subjects.discard("")
         return sorted(subjects) or ["General"]
 
+    def _process_frame(self, frame):
+        """Detect and recognize faces through YuNet + SFace."""
+        if frame is None:
+            return None
+        processed = frame.copy()
+        recognition_message = "No face detected"
+        try:
+            if self.attendance_mode == "auto" and self.has_recognition_model:
+                results = self.face_engine.recognize_faces(processed)
+                if results:
+                    recognition_message = "Face detected"
+                for location, name, student_id, confidence in results:
+                    top, right, bottom, left = location
+                    recognized = name != "Unknown" and bool(student_id)
+                    box_color = (0, 255, 0) if recognized else (0, 0, 255)
+                    cv2.rectangle(processed, (left, top), (right, bottom), box_color, 2)
+                    if recognized:
+                        label = f"{name} {confidence * 100:.1f}%"
+                        recognition_message = f"Recognized: {name} ({student_id})"
+                        if student_id not in self.marked_students:
+                            self.mark_attendance(student_id, name)
+                            self.marked_students.add(student_id)
+                            self.after(0, self._flash_attendance_marked)
+                    else:
+                        label = "Unknown"
+                        recognition_message = "Unknown face"
+                    cv2.putText(
+                        processed,
+                        label,
+                        (left, max(20, top - 10)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.65,
+                        box_color,
+                        2,
+                    )
+            else:
+                locations = self.face_engine.detect_faces(processed)
+                if locations:
+                    recognition_message = (
+                        "Face detected (Manual mode)"
+                        if self.attendance_mode == "manual"
+                        else "Face detected - train the SFace gallery"
+                    )
+                for top, right, bottom, left in locations:
+                    cv2.rectangle(processed, (left, top), (right, bottom), (255, 0, 0), 2)
+                    cv2.putText(
+                        processed,
+                        "Face",
+                        (left, max(20, top - 10)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.65,
+                        (255, 0, 0),
+                        2,
+                    )
+        except ModelUnavailableError as exc:
+            recognition_message = "Face models unavailable"
+            self.logger.error("YuNet/SFace models unavailable: %s", exc)
+        except cv2.error as exc:
+            recognition_message = "Recognition error"
+            self.logger.error("YuNet/SFace frame processing failed: %s", exc)
+
+        self.after(0, lambda msg=recognition_message: self._update_status(msg))
+        return cv2.cvtColor(processed, cv2.COLOR_BGR2RGB)
+
     def mark_attendance(self, student_id: str, student_name: str) -> None:
         """Persist attendance to SQLite and update the existing UI state."""
         now = _local_now()
         subject = self.subject_var.get().strip() if hasattr(self, "subject_var") else "General"
         subject = subject or "General"
-        method = "manual" if getattr(self, "attendance_mode", "auto") == "manual" else "face"
+        method = "manual" if getattr(self, "attendance_mode", "auto") == "manual" else "sface"
 
         try:
             success = self.database.mark_attendance(
@@ -77,7 +141,7 @@ class AttendanceView(_LegacyAttendanceView):
                 "id": str(student_id),
                 "name": str(student_name),
                 "time": now.strftime("%H:%M:%S"),
-                "confidence": "Manual" if method == "manual" else "Recognized",
+                "confidence": "Manual" if method == "manual" else "SFace",
             }
             existing_ids = {str(item.get("id")) for item in self.attendance_list}
             if str(student_id) not in existing_ids:
@@ -110,7 +174,6 @@ class AttendanceView(_LegacyAttendanceView):
             self.show_status(f"Failed to mark attendance: {exc}", "red")
 
     def _mark_attendance(self, student_id: str, student_name: str) -> None:
-        """Compatibility path used by older camera callbacks."""
         self.mark_attendance(student_id, student_name)
 
     def _save_attendance(self) -> None:
@@ -128,11 +191,7 @@ class AttendanceView(_LegacyAttendanceView):
             export_dir.mkdir(parents=True, exist_ok=True)
             filename = f"Attendance_{subject}_{current_date}.csv"
             export_path = export_dir / filename
-            self.database.export_attendance_csv(
-                export_path,
-                subject=subject,
-                date=current_date,
-            )
+            self.database.export_attendance_csv(export_path, subject=subject, date=current_date)
             self.show_status(f"Attendance exported to {filename}", "green")
             messagebox.showinfo("Success", f"Attendance records exported to {filename}")
         except Exception as exc:  # noqa: BLE001 - UI boundary must not kill the event loop
@@ -140,11 +199,11 @@ class AttendanceView(_LegacyAttendanceView):
             messagebox.showerror("Error", f"Failed to export attendance: {exc}")
 
     def cleanup(self) -> bool:
-        """Release UI/camera resources and close the database connection."""
         result = True
         try:
             result = bool(super().cleanup())
         finally:
+            self.face_engine.cleanup()
             self.database.close()
         return result
 

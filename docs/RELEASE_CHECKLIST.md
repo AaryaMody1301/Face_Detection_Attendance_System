@@ -4,7 +4,7 @@ Use this checklist before creating a version tag. Hosted CI validates imports, t
 
 ## 1. Clean install
 
-- Install from a fresh checkout with Python 3.10 or 3.12.
+- Install from a fresh checkout with Python 3.11 or 3.12.
 - Run `python main.py --self-test` and confirm every supported module reports `ok`.
 - Run `python scripts/download_face_models.py` once while online, or configure verified local model paths.
 - Run `python main.py --version` and confirm it matches the intended tag.

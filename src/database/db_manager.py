@@ -1,10 +1,10 @@
-"""Legacy DatabaseManager adapter for the canonical repository."""
+"""Legacy DatabaseManager adapter for the canonical database service."""
 
-from src.core.database.repository import AttendanceRepository
+from src.core.database.service import DatabaseService
 
 
-class DatabaseManager(AttendanceRepository):
-    """Backward-compatible manager exposing the repository query API."""
+class DatabaseManager(DatabaseService):
+    """Backward-compatible manager exposing the canonical query API."""
 
 
 __all__ = ["DatabaseManager"]

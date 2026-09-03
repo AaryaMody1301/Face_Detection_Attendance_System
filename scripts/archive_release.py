@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import shutil
 import sys
+from importlib import metadata
 from pathlib import Path
 
 
@@ -24,9 +25,10 @@ def main() -> int:
     if not target.exists():
         raise SystemExit(f"Release target does not exist: {target}")
 
+    version = metadata.version("face-detection-attendance-system")
     output_dir = Path("release")
     output_dir.mkdir(parents=True, exist_ok=True)
-    stem = output_dir / f"FaceAttendance-1.4.0-{args.label}"
+    stem = output_dir / f"FaceAttendance-{version}-{args.label}"
     archive_format = "zip" if sys.platform == "win32" else "gztar"
     archive = shutil.make_archive(
         str(stem),

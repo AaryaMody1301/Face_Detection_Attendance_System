@@ -35,27 +35,27 @@ for directory in REQUIRED_DIRS:
 
 
 def check_dependencies() -> bool:
-    """Verify required imports without crashing before diagnostics can run."""
+    """Verify imports and the OpenCV APIs required by YuNet + SFace."""
     required = {"cv2": "OpenCV", "customtkinter": "CustomTkinter"}
-    optional = {"face_recognition": "face_recognition", "dlib": "dlib"}
 
     ok = True
+    modules = {}
     for module_name, display_name in required.items():
         try:
             module = importlib.import_module(module_name)
+            modules[module_name] = module
             version = getattr(module, "__version__", "unknown")
             logger.info("%s version: %s", display_name, version)
         except ImportError as exc:
             logger.error("Missing required dependency %s: %s", display_name, exc)
             ok = False
 
-    for module_name, display_name in optional.items():
-        try:
-            module = importlib.import_module(module_name)
-            version = getattr(module, "__version__", "available")
-            logger.info("%s version: %s", display_name, version)
-        except ImportError:
-            logger.warning("Optional dependency %s is unavailable.", display_name)
+    cv2 = modules.get("cv2")
+    if cv2 is not None:
+        for api_name in ("FaceDetectorYN", "FaceRecognizerSF"):
+            if not hasattr(cv2, api_name):
+                logger.error("Installed OpenCV does not expose %s", api_name)
+                ok = False
 
     return ok
 
@@ -108,7 +108,7 @@ def show_splash_screen() -> None:
     steps = [
         "Checking dependencies...",
         "Initializing database...",
-        "Loading face detection models...",
+        "Preparing YuNet + SFace...",
         "Preparing user interface...",
         "Starting application...",
     ]

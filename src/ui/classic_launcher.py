@@ -1,36 +1,36 @@
-"""
-Launcher for the classic UI version of Face Detection Attendance System
-"""
-import os
-import sys
-import tkinter as tk
-import logging
+"""Launcher for the classic UI version of Face Detection Attendance System."""
+from __future__ import annotations
 
-# Configure logging
+import logging
+import tkinter as tk
+
+from src.ui.classic_face_compat import ClassicFaceDetector
+
 logger = logging.getLogger(__name__)
 
-def launch_classic_ui():
-    """
-    Launch the classic UI version of Face Detection Attendance System
-    """
+
+def launch_classic_ui() -> bool:
+    """Launch the original classic UI on the canonical face engine."""
     try:
-        # Import the classic app
-        from src.ui.app import FaceAttendanceApp
-        
-        # Create root Tkinter window
+        from src.ui import app as classic_app
+
+        # The original classic camera loop expects a historical two-list return
+        # value. Keep that UI contract local to this launcher while its detector
+        # still runs YuNet + SFace underneath.
+        classic_app.FaceDetector = ClassicFaceDetector
+
         root = tk.Tk()
-        
-        # Initialize and run the app
-        app = FaceAttendanceApp(root)
+        classic_app.FaceAttendanceApp(root)
         root.mainloop()
-        
         logger.info("Classic UI closed normally")
         return True
-    except Exception as e:
-        logger.error(f"Error launching classic UI: {e}")
+    except Exception as exc:  # noqa: BLE001 - top-level UI boundary
+        logger.error("Error launching classic UI: %s", exc)
         import traceback
+
         traceback.print_exc()
         return False
+
 
 if __name__ == "__main__":
     launch_classic_ui()

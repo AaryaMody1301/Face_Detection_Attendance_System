@@ -48,7 +48,14 @@ jobs:
           src/database/db_manager.py
           src/database/enhanced_db.py
           src/database/sqlite_handler.py
+          src/face_recognition/detector.py
+          src/face_recognition/enhanced_detector.py
+          src/face_recognition/fixed_detector.py
           src/cli/train.py
+          src/cli/take_attendance.py
+          src/ui/legacy_face_compat.py
+          src/ui/classic_face_compat.py
+          src/ui/classic_launcher.py
           src/ui/attendance_view.py
           src/ui/student_registration.py
           src/ui/training_view.py

@@ -1,4 +1,4 @@
-"""Face Detection Attendance System - main entry point."""
+"""Face Detection Attendance System - production entry point."""
 from __future__ import annotations
 
 import argparse
@@ -6,11 +6,15 @@ import importlib
 import json
 import logging
 import sys
-from importlib import metadata
 from pathlib import Path
 
 from src.core.paths import LOGS_DIR, PROJECT_ROOT
-from src.core.runtime import prepare_runtime_environment, runtime_diagnostics
+from src.core.runtime import (
+    application_import_self_test,
+    prepare_runtime_environment,
+    runtime_diagnostics,
+)
+from src.core.version import get_version
 
 BASE_DIR = PROJECT_ROOT
 prepare_runtime_environment()
@@ -28,13 +32,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def _app_version() -> str:
-    try:
-        return metadata.version("face-detection-attendance-system")
-    except metadata.PackageNotFoundError:
-        return "1.4.0"
-
-
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Face Detection Attendance System")
     parser.add_argument("--version", action="store_true", help="Print the application version and exit")
@@ -44,14 +41,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Run headless dependency/runtime diagnostics and exit",
     )
     parser.add_argument(
-        "--diagnostics-output",
-        type=Path,
-        help="Write diagnostics JSON to this file (useful for windowed/frozen builds)",
+        "--self-test",
+        action="store_true",
+        help="Import every supported production surface without opening the GUI",
     )
     parser.add_argument(
-        "--ui",
-        choices=("modern", "classic"),
-        help="Start a specific UI without showing the UI selector",
+        "--diagnostics-output",
+        type=Path,
+        help="Write diagnostics/self-test JSON to this file",
     )
     return parser.parse_args(argv)
 
@@ -85,14 +82,14 @@ def check_dependencies() -> bool:
     return ok
 
 
-def _emit_diagnostics(output_path: Path | None) -> None:
-    payload = json.dumps(runtime_diagnostics(), indent=2, sort_keys=True)
+def _emit_payload(payload: dict[str, object], output_path: Path | None) -> None:
+    encoded = json.dumps(payload, indent=2, sort_keys=True)
     if output_path is not None:
         output_path = output_path.expanduser().resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(payload + "\n", encoding="utf-8")
+        output_path.write_text(encoded + "\n", encoding="utf-8")
     elif sys.stdout is not None:
-        print(payload)
+        print(encoded)
 
 
 def show_splash_screen() -> None:
@@ -113,6 +110,8 @@ def show_splash_screen() -> None:
     splash.geometry(f"{width}x{height}+{x}+{y}")
     splash.overrideredirect(True)
     splash.configure(bg="#2d3436")
+
+    import tkinter as tk
 
     tk.Label(
         splash,
@@ -145,7 +144,7 @@ def show_splash_screen() -> None:
         "Initializing database...",
         "Preparing YuNet + SFace...",
         "Preparing liveness protection...",
-        "Starting application...",
+        "Starting secure login...",
     ]
 
     def update_splash(step: int = 0) -> None:
@@ -162,18 +161,24 @@ def show_splash_screen() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Start the desktop application or run a headless support command."""
+    """Start the supported desktop UI or run a headless support command."""
     args = parse_args(argv)
 
     if args.version:
         if sys.stdout is not None:
-            print(_app_version())
+            print(get_version())
         return 0
 
-    if args.diagnostics:
+    if args.diagnostics or args.self_test:
         dependencies_ok = check_dependencies()
-        _emit_diagnostics(args.diagnostics_output)
-        return 0 if dependencies_ok else 1
+        payload: dict[str, object] = runtime_diagnostics()
+        imports_ok = True
+        if args.self_test:
+            import_report = application_import_self_test()
+            payload["application_imports"] = import_report
+            imports_ok = bool(import_report["ok"])
+        _emit_payload(payload, args.diagnostics_output)
+        return 0 if dependencies_ok and imports_ok else 1
 
     try:
         if str(BASE_DIR) not in sys.path:
@@ -184,36 +189,15 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
         show_splash_screen()
+        from src.ui.modern_launcher import launch_modern_ui
 
-        if args.ui:
-            ui_type = args.ui
-        else:
-            from src.ui.ui_selector import select_ui
-
-            ui_type = select_ui()
-        logger.info("Selected UI type: %s", ui_type)
-
-        if ui_type.lower() == "modern":
-            try:
-                from src.ui.modern_launcher import launch_modern_ui
-
-                launch_modern_ui()
-            except ImportError as exc:
-                logger.error("Failed to import modern UI: %s", exc)
-                from src.ui.classic_launcher import launch_classic_ui
-
-                launch_classic_ui()
-        else:
-            from src.ui.classic_launcher import launch_classic_ui
-
-            launch_classic_ui()
+        return 0 if launch_modern_ui() else 1
     except KeyboardInterrupt:
         logger.info("Application terminated by user")
         return 0
     except Exception:
         logger.exception("Error starting application")
         return 1
-    return 0
 
 
 if __name__ == "__main__":

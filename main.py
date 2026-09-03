@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Face Detection Attendance System - main entry point."""
 from __future__ import annotations
 
@@ -164,7 +163,7 @@ def main() -> int:
     except KeyboardInterrupt:
         logger.info("Application terminated by user")
         return 0
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - top-level boundary logs unexpected startup failures.
         logger.error("Error starting application: %s", exc)
         traceback.print_exc()
         return 1

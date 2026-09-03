@@ -6,6 +6,7 @@ from typing import Any
 
 import cv2
 
+from src.core.camera import ResilientCamera
 from src.core.database.compat_exports import export_legacy_student_csvs
 from src.core.database.service import DatabaseService
 from src.core.face_engine import DEFAULT_GALLERY_PATH, FaceEngine
@@ -23,6 +24,36 @@ class TrainingView(legacy_training_view.TrainingView):
         self.face_engine = FaceEngine()
         export_legacy_student_csvs(self.database)
         super().__init__(master, controller=controller, **kwargs)
+
+    def _initialize_camera(self, camera_index: int) -> None:
+        """Initialize a reconnecting camera and reuse the retained processing loop."""
+        try:
+            camera = ResilientCamera(camera_index)
+            if not camera.open():
+                self.log("Failed to open camera", level="error")
+                self.after(0, self._camera_start_failed)
+                return
+            self.camera = camera
+
+            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            width = self.camera.get(cv2.CAP_PROP_FRAME_WIDTH)
+            height = self.camera.get(cv2.CAP_PROP_FRAME_HEIGHT)
+            self.log(f"Camera resolution: {width}x{height}", level="info")
+
+            ok, frame = self.camera.read()
+            if not ok or frame is None:
+                self.log("Failed to read from camera", level="error")
+                self.camera.release()
+                self.camera = None
+                self.after(0, self._camera_start_failed)
+                return
+
+            self.after(0, self._camera_start_success)
+            self._camera_processing_loop()
+        except (cv2.error, OSError, RuntimeError) as exc:
+            self.log(f"Error initializing camera: {exc}", level="error")
+            self.after(0, self._camera_start_failed)
 
     def _process_camera_frame(self, frame):
         """Preview YuNet detections instead of the retained Haar preview."""

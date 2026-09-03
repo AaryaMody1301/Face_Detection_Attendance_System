@@ -58,6 +58,11 @@ class FaceEngine:
         """Delegate compatible attributes to the retained Phase-1 implementation."""
         return getattr(self._engine, name)
 
+    @property
+    def detection_model(self) -> str:
+        """Legacy name for the active detection method."""
+        return self._engine.detection_method
+
     @staticmethod
     def _normalize_frame(frame: Any) -> Any:
         if frame is not None and getattr(frame, "ndim", 0) == 2:

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import cv2
 
+from src.core.camera import ResilientCamera
 from src.core.face_engine import DEFAULT_GALLERY_PATH, SFACE_COSINE_THRESHOLD
 from src.core.face_models import ModelUnavailableError
 from src.core.liveness import (
@@ -20,6 +21,7 @@ from src.core.liveness import (
     TemporalLivenessGate,
     recognize_faces_guarded,
 )
+from src.core.paths import BACKUPS_DIR
 from src.database.db_handler import AttendanceDB
 from src.face_recognition.detector import FaceDetector
 
@@ -44,8 +46,9 @@ def take_attendance(
     liveness_threshold: float = DEFAULT_LIVENESS_THRESHOLD,
     liveness_frames: int = DEFAULT_REQUIRED_LIVE_FRAMES,
     liveness_window: int = DEFAULT_LIVENESS_WINDOW,
+    camera_index: int = 0,
 ) -> str | None:
-    """Recognize live students from the default camera and mark attendance."""
+    """Recognize live students from a resilient camera and mark attendance."""
     detector = FaceDetector(confidence_threshold=confidence_threshold)
     liveness = MiniFASLiveness(live_threshold=liveness_threshold)
     liveness_gate = TemporalLivenessGate(
@@ -71,9 +74,9 @@ def take_attendance(
             logger.error("Failed to create attendance record")
             return None
 
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            logger.error("Failed to open video capture")
+        cap = ResilientCamera(camera_index)
+        if not cap.open():
+            logger.error("Failed to open camera %s", camera_index)
             return None
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -90,9 +93,14 @@ def take_attendance(
         try:
             while True:
                 ret, frame = cap.read()
-                if not ret:
-                    logger.error("Failed to read frame from video capture")
-                    break
+                elapsed = time.monotonic() - start_time
+                if not ret or frame is None:
+                    logger.warning("Camera frame unavailable; reconnect will be attempted automatically")
+                    if timeout > 0 and elapsed > timeout:
+                        logger.info("Timeout reached (%s seconds)", timeout)
+                        break
+                    time.sleep(0.1)
+                    continue
 
                 display_frame = frame.copy()
                 results = recognize_faces_guarded(
@@ -126,12 +134,9 @@ def take_attendance(
                         scores = recognition_buffer.setdefault(result.student_id, [])
                         scores.append(float(result.recognition_score))
                         del scores[:-buffer_size]
-                        good_frames = sum(
-                            value >= confidence_threshold for value in scores
-                        )
+                        good_frames = sum(value >= confidence_threshold for value in scores)
 
                         if good_frames >= min_recognized_frames:
-                            elapsed = time.monotonic() - start_time
                             status = (
                                 "Late"
                                 if late_threshold > 0 and elapsed > late_threshold
@@ -185,7 +190,6 @@ def take_attendance(
                         2,
                     )
 
-                elapsed = time.monotonic() - start_time
                 cv2.putText(
                     display_frame,
                     f"Attendance Count: {len(recognized_students)}",
@@ -237,7 +241,7 @@ def _create_attendance_backup(attendance_file: str | Path) -> bool:
     if not source.is_file():
         return False
     subject = source.name.split("_", 1)[0]
-    destination = Path("backups") / "attendance_backup" / subject / source.name
+    destination = BACKUPS_DIR / "attendance_backup" / subject / source.name
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
@@ -259,6 +263,7 @@ def main_with_args(args: argparse.Namespace) -> int:
         liveness_threshold=args.liveness_threshold,
         liveness_frames=args.liveness_frames,
         liveness_window=args.liveness_window,
+        camera_index=args.camera,
     )
     return 0 if attendance_file else 1
 
@@ -298,6 +303,7 @@ def main() -> int:
         default=DEFAULT_LIVENESS_WINDOW,
         help="Temporal liveness window size (default: 5)",
     )
+    parser.add_argument("--camera", type=int, default=0, help="Camera device index (default: 0)")
     parser.add_argument("--no-window", action="store_true", help="Do not show the video window")
     parser.add_argument("--timeout", type=int, default=60, help="Timeout in seconds (0 disables)")
     parser.add_argument(

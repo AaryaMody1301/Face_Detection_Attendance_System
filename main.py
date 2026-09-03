@@ -3,25 +3,27 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import logging
 import sys
-import traceback
 from importlib import metadata
+from pathlib import Path
 
 from src.core.paths import LOGS_DIR, PROJECT_ROOT
-from src.core.runtime import prepare_runtime_environment, print_runtime_diagnostics
+from src.core.runtime import prepare_runtime_environment, runtime_diagnostics
 
 BASE_DIR = PROJECT_ROOT
 prepare_runtime_environment()
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
+_handlers: list[logging.Handler] = [logging.FileHandler(LOGS_DIR / "app.log")]
+if sys.stderr is not None:
+    _handlers.insert(0, logging.StreamHandler())
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(LOGS_DIR / "app.log"),
-    ],
+    handlers=_handlers,
 )
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--diagnostics",
         action="store_true",
         help="Run headless dependency/runtime diagnostics and exit",
+    )
+    parser.add_argument(
+        "--diagnostics-output",
+        type=Path,
+        help="Write diagnostics JSON to this file (useful for windowed/frozen builds)",
     )
     parser.add_argument(
         "--ui",
@@ -76,6 +83,16 @@ def check_dependencies() -> bool:
             ok = False
 
     return ok
+
+
+def _emit_diagnostics(output_path: Path | None) -> None:
+    payload = json.dumps(runtime_diagnostics(), indent=2, sort_keys=True)
+    if output_path is not None:
+        output_path = output_path.expanduser().resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(payload + "\n", encoding="utf-8")
+    elif sys.stdout is not None:
+        print(payload)
 
 
 def show_splash_screen() -> None:
@@ -149,12 +166,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
     if args.version:
-        print(_app_version())
+        if sys.stdout is not None:
+            print(_app_version())
         return 0
 
     if args.diagnostics:
         dependencies_ok = check_dependencies()
-        print_runtime_diagnostics()
+        _emit_diagnostics(args.diagnostics_output)
         return 0 if dependencies_ok else 1
 
     try:
@@ -193,8 +211,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("Application terminated by user")
         return 0
     except Exception as exc:  # noqa: BLE001 - top-level boundary logs unexpected startup failures.
-        logger.error("Error starting application: %s", exc)
-        traceback.print_exc()
+        logger.exception("Error starting application: %s", exc)
         return 1
     return 0
 

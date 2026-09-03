@@ -8,10 +8,11 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import pandas as pd
 
@@ -24,6 +25,11 @@ from src.core.paths import (
 
 logger = logging.getLogger(__name__)
 SCHEMA_VERSION = 2
+
+
+def _local_now() -> datetime:
+    """Return the current local wall-clock time as a timezone-aware datetime."""
+    return datetime.now(UTC).astimezone()
 
 
 class AttendanceRepository:
@@ -381,7 +387,7 @@ class AttendanceRepository:
         **_: Any,
     ) -> bool:
         del confidence
-        now = datetime.now()
+        now = _local_now()
         date = date or now.strftime("%Y-%m-%d")
         time_value = time or time_str or now.strftime("%H:%M:%S")
         subject = subject or self._subject_from_export_path(file_path) or "General"
@@ -424,7 +430,7 @@ class AttendanceRepository:
 
     def create_attendance_record(self, subject: str, date: str | None = None, time: str | None = None, time_str: str | None = None) -> str:
         """Create a derived CSV export path for a legacy attendance session."""
-        now = datetime.now()
+        now = _local_now()
         date = date or now.strftime("%Y-%m-%d")
         time_value = time or time_str or now.strftime("%H-%M-%S")
         safe_time = time_value.replace(":", "-")
@@ -505,7 +511,7 @@ class AttendanceRepository:
         df = self._attendance_dataframe(subject=subject, date=date, enrollment=enrollment)
         if file_path is None:
             stem = subject or "attendance"
-            suffix = date or datetime.now().strftime("%Y-%m-%d")
+            suffix = date or _local_now().strftime("%Y-%m-%d")
             file_path = ATTENDANCE_EXPORTS_DIR / f"{stem}_{suffix}.csv"
         path = Path(file_path)
         path.parent.mkdir(parents=True, exist_ok=True)

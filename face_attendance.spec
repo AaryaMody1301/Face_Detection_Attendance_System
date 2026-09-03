@@ -6,11 +6,13 @@ import sys
 
 from PyInstaller.utils.hooks import collect_all, copy_metadata
 
+from src.core.runtime import SUPPORTED_APPLICATION_IMPORTS
+
 project_root = Path(SPECPATH).resolve()
 app_version = metadata.version("face-detection-attendance-system")
 datas = copy_metadata("face-detection-attendance-system")
 binaries = []
-hiddenimports = []
+hiddenimports = list(SUPPORTED_APPLICATION_IMPORTS)
 
 for package_name in ("customtkinter", "ttkthemes"):
     package_datas, package_binaries, package_hiddenimports = collect_all(package_name)

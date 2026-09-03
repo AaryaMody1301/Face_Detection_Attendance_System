@@ -5,8 +5,9 @@ import logging
 import threading
 import time
 from collections import defaultdict, deque
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import cv2
 import numpy as np
@@ -166,7 +167,7 @@ class FaceEngine:
 
     @staticmethod
     def _row_to_location(row: np.ndarray) -> tuple[int, int, int, int]:
-        x, y, width, height = (int(round(float(value))) for value in row[:4])
+        x, y, width, height = (round(float(value)) for value in row[:4])
         return (max(0, y), max(0, x + width), max(0, y + height), max(0, x))
 
     def detect_faces(self, frame: Any) -> list[tuple[int, int, int, int]]:
@@ -279,7 +280,8 @@ class FaceEngine:
         template = self._normalize_embedding(np.mean(np.vstack(features), axis=0))
 
         retained = [
-            index for index, existing_id in enumerate(self.known_face_ids)
+            index
+            for index, existing_id in enumerate(self.known_face_ids)
             if str(existing_id) != str(student_id)
         ]
         embeddings = [self._embeddings[index] for index in retained] if retained else []

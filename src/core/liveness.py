@@ -4,7 +4,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -330,3 +330,52 @@ class MiniFASLiveness:
         self.inference_times.clear()
         with self._model_lock:
             self._models = []
+
+
+def recognize_faces_guarded(
+    face_engine: Any,
+    frame: Any,
+    liveness_engine: MiniFASLiveness,
+    gate: TemporalLivenessGate,
+    *,
+    confidence_threshold: float | None = None,
+) -> list[GuardedFaceResult]:
+    """Run liveness first and invoke SFace only after a temporal live pass."""
+    normalized = face_engine._normalize_frame(frame)
+    if not face_engine._is_valid_frame(normalized):
+        return []
+
+    original_threshold = face_engine.confidence_threshold
+    if confidence_threshold is not None:
+        face_engine.confidence_threshold = float(confidence_threshold)
+
+    gate.begin_frame()
+    start = time.perf_counter()
+    try:
+        results: list[GuardedFaceResult] = []
+        for row in face_engine._detect_rows(normalized):
+            location = face_engine._row_to_location(row)
+            prediction = liveness_engine.predict(normalized, location)
+            decision = gate.update(location, prediction)
+
+            name, student_id, recognition_score = "Unknown", "", 0.0
+            if decision.passed:
+                try:
+                    feature = face_engine._feature_from_row(normalized, row)
+                    name, student_id, recognition_score = face_engine._match_embedding(feature)
+                except (cv2.error, ValueError):
+                    name, student_id, recognition_score = "Unknown", "", 0.0
+
+            results.append(
+                GuardedFaceResult(
+                    location=location,
+                    name=name,
+                    student_id=student_id,
+                    recognition_score=float(recognition_score),
+                    liveness=decision,
+                )
+            )
+        return results
+    finally:
+        face_engine.confidence_threshold = original_threshold
+        face_engine.recognition_times.append(time.perf_counter() - start)

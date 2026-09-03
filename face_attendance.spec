@@ -12,7 +12,7 @@ project_root = Path(SPECPATH).resolve()
 app_version = metadata.version("face-detection-attendance-system")
 datas = copy_metadata("face-detection-attendance-system")
 binaries = []
-hiddenimports = list(SUPPORTED_APPLICATION_IMPORTS)
+hiddenimports = [*SUPPORTED_APPLICATION_IMPORTS, "src.ui.legacy_attendance_view"]
 
 for package_name in ("customtkinter", "ttkthemes"):
     package_datas, package_binaries, package_hiddenimports = collect_all(package_name)

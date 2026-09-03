@@ -3,4 +3,4 @@
 from src.core.face_engine import FaceEngine
 from src.core.face_recognition.face_detector import FaceDetector
 
-__all__ = ["FaceEngine", "FaceDetector"]
+__all__ = ["FaceDetector", "FaceEngine"]

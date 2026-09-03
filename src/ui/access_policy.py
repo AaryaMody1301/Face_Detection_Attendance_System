@@ -5,7 +5,8 @@ from typing import Protocol
 
 
 class PermissionChecker(Protocol):
-    def has_permission(self, permission: str) -> bool: ...
+    def has_permission(self, permission: str) -> bool:
+        ...
 
 
 NAVIGATION_PERMISSIONS = {

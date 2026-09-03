@@ -5,8 +5,8 @@ import logging
 import threading
 from tkinter import messagebox
 
-import cv2
 import customtkinter as ctk
+import cv2
 
 from src.core.camera import ResilientCamera
 from src.core.utils.config_manager import ConfigManager
@@ -175,7 +175,10 @@ class SettingsPage(ctk.CTkFrame):
             camera_id = int(self.camera_var.get().strip())
             required_frames = int(self.live_frames_var.get())
         except ValueError:
-            self.general_status.configure(text="Camera ID and liveness frames must be integers.", text_color="red")
+            self.general_status.configure(
+                text="Camera ID and liveness frames must be integers.",
+                text_color="red",
+            )
             return
 
         payload = {
@@ -219,13 +222,18 @@ class SettingsPage(ctk.CTkFrame):
         camera = ResilientCamera(camera_id)
         try:
             if not camera.open():
-                self.general_status.configure(text=f"Could not open camera {camera_id}.", text_color="red")
+                self.general_status.configure(
+                    text=f"Could not open camera {camera_id}.", text_color="red"
+                )
                 return
             camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
             ok, frame = camera.read()
             if not ok or frame is None:
-                self.general_status.configure(text=f"Camera {camera_id} opened but no frame was read.", text_color="red")
+                self.general_status.configure(
+                    text=f"Camera {camera_id} opened but no frame was read.",
+                    text_color="red",
+                )
                 return
             height, width = frame.shape[:2]
             self.general_status.configure(

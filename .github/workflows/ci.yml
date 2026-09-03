@@ -36,12 +36,14 @@ jobs:
           src/core/face_engine.py
           src/core/database/repository.py
           src/core/database/service.py
+          src/core/database/compat_exports.py
           src/core/database/db_handler.py
           src/database/db_handler.py
           src/database/db_manager.py
           src/database/enhanced_db.py
           src/database/sqlite_handler.py
           src/ui/attendance_view.py
+          src/ui/student_registration.py
           tests/test_detector.py
           tests/test_db_handler.py
           tests/test_repository.py

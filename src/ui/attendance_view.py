@@ -6,7 +6,7 @@ canonical SQLite service so CSV files are exports only.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from tkinter import messagebox
 from typing import Any
@@ -14,6 +14,11 @@ from typing import Any
 from src.core.database.compat_exports import export_legacy_student_csvs
 from src.core.database.service import DatabaseService
 from src.ui.legacy_attendance_view import AttendanceView as _LegacyAttendanceView
+
+
+def _local_now() -> datetime:
+    """Return current local time as a timezone-aware datetime."""
+    return datetime.now(UTC).astimezone()
 
 
 class AttendanceView(_LegacyAttendanceView):
@@ -34,7 +39,7 @@ class AttendanceView(_LegacyAttendanceView):
                 enrollment = str(row["Enrollment"])
                 self.students[enrollment] = (enrollment, str(row["Name"]))
             self.logger.info("Loaded %s student records from SQLite", len(self.students))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - UI boundary must not kill the event loop
             self.logger.error("Error loading students from SQLite: %s", exc)
 
     def _get_subjects(self) -> list[str]:
@@ -51,7 +56,7 @@ class AttendanceView(_LegacyAttendanceView):
 
     def mark_attendance(self, student_id: str, student_name: str) -> None:
         """Persist attendance to SQLite and update the existing UI state."""
-        now = datetime.now()
+        now = _local_now()
         subject = self.subject_var.get().strip() if hasattr(self, "subject_var") else "General"
         subject = subject or "General"
         method = "manual" if getattr(self, "attendance_mode", "auto") == "manual" else "face"
@@ -98,7 +103,7 @@ class AttendanceView(_LegacyAttendanceView):
                 self._update_log(message)
             if hasattr(self, "_show_attendance_confirmation"):
                 self.after(0, lambda: self._show_attendance_confirmation(student_name))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - UI boundary must not kill the event loop
             self.logger.error("Error marking attendance through SQLite: %s", exc)
             if hasattr(self, "_update_log"):
                 self._update_log(f"Error marking attendance: {exc}", level="error")
@@ -113,7 +118,7 @@ class AttendanceView(_LegacyAttendanceView):
         try:
             subject = self.subject_var.get().strip() if hasattr(self, "subject_var") else "General"
             subject = subject or "General"
-            current_date = datetime.now().strftime("%Y-%m-%d")
+            current_date = _local_now().strftime("%Y-%m-%d")
             records = self.database.get_attendance_records(subject=subject, date=current_date)
             if not records:
                 messagebox.showinfo("No Records", "There are no attendance records to export.")
@@ -130,7 +135,7 @@ class AttendanceView(_LegacyAttendanceView):
             )
             self.show_status(f"Attendance exported to {filename}", "green")
             messagebox.showinfo("Success", f"Attendance records exported to {filename}")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - UI boundary must not kill the event loop
             self.logger.error("Error exporting attendance: %s", exc)
             messagebox.showerror("Error", f"Failed to export attendance: {exc}")
 

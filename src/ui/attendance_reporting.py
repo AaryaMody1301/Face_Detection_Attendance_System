@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,10 @@ class DashboardSnapshot:
     recent_records: tuple[dict[str, str], ...]
 
 
+def _local_today() -> date:
+    return datetime.now().astimezone().date()
+
+
 def period_start(period: str, *, today: date | None = None) -> str | None:
     """Return an inclusive ISO start date for a named reporting period."""
     key = period.strip().lower()
@@ -37,7 +41,7 @@ def period_start(period: str, *, today: date | None = None) -> str | None:
     days = _PERIOD_DAYS.get(key)
     if days is None:
         raise ValueError(f"Unsupported reporting period: {period}")
-    anchor = today or date.today()
+    anchor = today or _local_today()
     return (anchor - timedelta(days=days - 1)).isoformat()
 
 
@@ -63,7 +67,7 @@ def build_dashboard_snapshot(
     recent_limit: int = 8,
 ) -> DashboardSnapshot:
     """Build a complete dashboard snapshot from SQLite-backed service methods."""
-    anchor = today or date.today()
+    anchor = today or _local_today()
     all_attendance = db._attendance_dataframe()
     students = db.get_student_details()
     subjects = db.get_subjects()
@@ -71,9 +75,9 @@ def build_dashboard_snapshot(
     if all_attendance.empty:
         return DashboardSnapshot(
             total_records=0,
-            enrolled_students=int(len(students)),
+            enrolled_students=len(students),
             today_records=0,
-            subject_count=int(len(subjects)),
+            subject_count=len(subjects),
             attendance_by_date=(),
             attendance_by_subject=(),
             recent_records=(),
@@ -106,10 +110,10 @@ def build_dashboard_snapshot(
     )
 
     return DashboardSnapshot(
-        total_records=int(len(normalized)),
-        enrolled_students=int(len(students)),
+        total_records=len(normalized),
+        enrolled_students=len(students),
         today_records=today_records,
-        subject_count=int(len(subjects)),
+        subject_count=len(subjects),
         attendance_by_date=by_date,
         attendance_by_subject=by_subject,
         recent_records=recent_records,

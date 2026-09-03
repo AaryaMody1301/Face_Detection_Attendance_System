@@ -1,4 +1,4 @@
-"""Command-line attendance using the canonical YuNet + SFace engine."""
+"""Command-line attendance using YuNet, SFace, and MiniFAS anti-spoofing."""
 from __future__ import annotations
 
 import argparse
@@ -12,6 +12,14 @@ import cv2
 
 from src.core.face_engine import DEFAULT_GALLERY_PATH, SFACE_COSINE_THRESHOLD
 from src.core.face_models import ModelUnavailableError
+from src.core.liveness import (
+    DEFAULT_LIVENESS_THRESHOLD,
+    DEFAULT_LIVENESS_WINDOW,
+    DEFAULT_REQUIRED_LIVE_FRAMES,
+    MiniFASLiveness,
+    TemporalLivenessGate,
+    recognize_faces_guarded,
+)
 from src.database.db_handler import AttendanceDB
 from src.face_recognition.detector import FaceDetector
 
@@ -33,9 +41,17 @@ def take_attendance(
     show_window: bool = True,
     timeout: int = 60,
     late_threshold: int = 300,
+    liveness_threshold: float = DEFAULT_LIVENESS_THRESHOLD,
+    liveness_frames: int = DEFAULT_REQUIRED_LIVE_FRAMES,
+    liveness_window: int = DEFAULT_LIVENESS_WINDOW,
 ) -> str | None:
-    """Recognize students from the default camera and mark attendance."""
+    """Recognize live students from the default camera and mark attendance."""
     detector = FaceDetector(confidence_threshold=confidence_threshold)
+    liveness = MiniFASLiveness(live_threshold=liveness_threshold)
+    liveness_gate = TemporalLivenessGate(
+        window_size=liveness_window,
+        required_live_frames=liveness_frames,
+    )
     db = AttendanceDB()
     model = Path(model_path)
 
@@ -70,7 +86,7 @@ def take_attendance(
         min_recognized_frames = 3
         start_time = time.monotonic()
 
-        logger.info("Started SFace attendance capture. Press 'q' to stop.")
+        logger.info("Started liveness-gated SFace attendance capture. Press 'q' to stop.")
         try:
             while True:
                 ret, frame = cap.read()
@@ -79,20 +95,36 @@ def take_attendance(
                     break
 
                 display_frame = frame.copy()
-                results = detector.recognize_faces(
+                results = recognize_faces_guarded(
+                    detector,
                     frame,
+                    liveness,
+                    liveness_gate,
                     confidence_threshold=confidence_threshold,
                 )
 
-                for location, name, student_id, score in results:
-                    top, right, bottom, left = location
-                    recognized = name != "Unknown" and bool(student_id)
-                    color = (0, 255, 0) if recognized else (0, 165, 255)
-                    label = "Unknown"
+                for result in results:
+                    top, right, bottom, left = result.location
+                    decision = result.liveness
+                    prediction = decision.prediction
+                    recognized = result.name != "Unknown" and bool(result.student_id)
 
-                    if recognized:
-                        scores = recognition_buffer.setdefault(student_id, [])
-                        scores.append(float(score))
+                    if not prediction.is_live:
+                        color = (0, 0, 255)
+                        label = f"SPOOF BLOCKED: {prediction.label}"
+                    elif not decision.passed:
+                        color = (0, 215, 255)
+                        label = (
+                            f"Liveness {decision.live_frames}/"
+                            f"{liveness_gate.required_live_frames}"
+                        )
+                    elif not recognized:
+                        color = (0, 165, 255)
+                        label = f"Live - Unknown ({prediction.live_score:.2f})"
+                    else:
+                        color = (0, 255, 0)
+                        scores = recognition_buffer.setdefault(result.student_id, [])
+                        scores.append(float(result.recognition_score))
                         del scores[:-buffer_size]
                         good_frames = sum(
                             value >= confidence_threshold for value in scores
@@ -105,35 +137,40 @@ def take_attendance(
                                 if late_threshold > 0 and elapsed > late_threshold
                                 else "Present"
                             )
-                            if student_id not in recognized_students:
+                            if result.student_id not in recognized_students:
                                 db.mark_attendance(
-                                    student_id,
-                                    name,
+                                    result.student_id,
+                                    result.name,
                                     subject=subject,
                                     date=date,
                                     time=_local_now().strftime("%H:%M:%S"),
                                     file_path=attendance_file,
                                     status=status,
-                                    method="sface",
+                                    method="sface+liveness",
                                 )
-                                recognized_students[student_id] = name
+                                recognized_students[result.student_id] = result.name
                                 if status == "Late":
-                                    late_students.add(student_id)
+                                    late_students.add(result.student_id)
                                 logger.info(
-                                    "Marked %s attendance for %s (%s), cosine=%.3f",
+                                    "Marked %s attendance for %s (%s), cosine=%.3f, live=%.3f",
                                     status.upper(),
-                                    name,
-                                    student_id,
-                                    score,
+                                    result.name,
+                                    result.student_id,
+                                    result.recognition_score,
+                                    prediction.live_score,
                                 )
-                            label = f"{name} ({student_id}) {score:.3f}"
-                            if student_id in late_students:
+                            label = (
+                                f"{result.name} ({result.student_id}) "
+                                f"SFace {result.recognition_score:.3f} Live {prediction.live_score:.2f}"
+                            )
+                            if result.student_id in late_students:
                                 label += " LATE"
                                 color = (0, 0, 255)
                         else:
                             label = (
-                                f"Confirming {name} "
-                                f"({good_frames}/{min_recognized_frames}, {score:.3f})"
+                                f"Confirming {result.name} "
+                                f"({good_frames}/{min_recognized_frames}, "
+                                f"{result.recognition_score:.3f})"
                             )
 
                     cv2.rectangle(display_frame, (left, top), (right, bottom), color, 2)
@@ -143,7 +180,7 @@ def take_attendance(
                         label,
                         (left, y_pos),
                         cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6,
+                        0.58,
                         color,
                         2,
                     )
@@ -169,7 +206,7 @@ def take_attendance(
                 )
 
                 if show_window:
-                    cv2.imshow("Attendance System - YuNet + SFace", display_frame)
+                    cv2.imshow("Attendance System - Liveness + SFace", display_frame)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         break
                 if timeout > 0 and elapsed > timeout:
@@ -185,9 +222,11 @@ def take_attendance(
             _create_attendance_backup(attendance_file)
         return attendance_file
     except ModelUnavailableError as exc:
-        logger.error("Required YuNet/SFace model unavailable: %s", exc)
+        logger.error("Required recognition/liveness model unavailable: %s", exc)
         return None
     finally:
+        liveness_gate.reset()
+        liveness.cleanup()
         detector.cleanup()
         db.close()
 
@@ -211,18 +250,23 @@ def _create_attendance_backup(attendance_file: str | Path) -> bool:
 
 def main_with_args(args: argparse.Namespace) -> int:
     attendance_file = take_attendance(
-        args.subject,
-        args.model,
-        args.threshold,
-        not args.no_window,
-        args.timeout,
-        args.late_threshold,
+        subject=args.subject,
+        model_path=args.model,
+        confidence_threshold=args.threshold,
+        show_window=not args.no_window,
+        timeout=args.timeout,
+        late_threshold=args.late_threshold,
+        liveness_threshold=args.liveness_threshold,
+        liveness_frames=args.liveness_frames,
+        liveness_window=args.liveness_window,
     )
     return 0 if attendance_file else 1
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Take attendance using YuNet + SFace")
+    parser = argparse.ArgumentParser(
+        description="Take attendance using liveness-gated YuNet + SFace"
+    )
     parser.add_argument("subject", type=str, help="Subject name for the attendance record")
     parser.add_argument(
         "--model",
@@ -235,6 +279,24 @@ def main() -> int:
         type=float,
         default=SFACE_COSINE_THRESHOLD,
         help="Minimum SFace cosine similarity (OpenCV reference: 0.363)",
+    )
+    parser.add_argument(
+        "--liveness-threshold",
+        type=float,
+        default=DEFAULT_LIVENESS_THRESHOLD,
+        help="Minimum MiniFAS live-class probability (default: 0.50)",
+    )
+    parser.add_argument(
+        "--liveness-frames",
+        type=int,
+        default=DEFAULT_REQUIRED_LIVE_FRAMES,
+        help="Live frames required before identity matching (default: 3)",
+    )
+    parser.add_argument(
+        "--liveness-window",
+        type=int,
+        default=DEFAULT_LIVENESS_WINDOW,
+        help="Temporal liveness window size (default: 5)",
     )
     parser.add_argument("--no-window", action="store_true", help="Do not show the video window")
     parser.add_argument("--timeout", type=int, default=60, help="Timeout in seconds (0 disables)")

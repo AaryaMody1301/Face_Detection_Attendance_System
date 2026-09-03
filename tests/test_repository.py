@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from src.core.database.repository import SCHEMA_VERSION
 from src.core.database.service import DatabaseService
@@ -93,6 +94,39 @@ def test_legacy_schema_is_migrated_without_losing_attendance(tmp_path: Path):
         assert db.conn.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:
         db.close()
+
+
+def test_failed_legacy_migration_rolls_back_original_schema(tmp_path: Path):
+    db_path = tmp_path / "broken-legacy.db"
+    legacy = sqlite3.connect(db_path)
+    legacy.executescript(
+        """
+        CREATE TABLE students (
+            id INTEGER PRIMARY KEY,
+            enrollment TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            active TEXT
+        );
+        INSERT INTO students(id, enrollment, name, active)
+        VALUES (1, 'S001', 'Rollback Test', 'not-an-integer');
+        """
+    )
+    legacy.commit()
+    legacy.close()
+
+    with pytest.raises(ValueError):
+        DatabaseService(db_path=db_path)
+
+    verification = sqlite3.connect(db_path)
+    try:
+        columns = [row[1] for row in verification.execute("PRAGMA table_info(students)")]
+        row = verification.execute(
+            "SELECT enrollment, name, active FROM students WHERE id=1"
+        ).fetchone()
+        assert columns == ["id", "enrollment", "name", "active"]
+        assert row == ("S001", "Rollback Test", "not-an-integer")
+    finally:
+        verification.close()
 
 
 def test_csv_is_regenerated_from_database_source_of_truth(tmp_path: Path):

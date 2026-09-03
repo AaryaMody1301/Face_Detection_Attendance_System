@@ -90,7 +90,7 @@ class ResilientCamera:
         logger.error("Could not open camera source %r with any configured backend", self.source)
         return False
 
-    def isOpened(self) -> bool:  # noqa: N802 - OpenCV compatibility surface
+    def isOpened(self) -> bool:
         return self._capture is not None and bool(self._capture.isOpened())
 
     def _reconnect(self) -> bool:
@@ -147,14 +147,6 @@ class ResilientCamera:
                 capture.release()
             except (cv2.error, OSError):
                 logger.debug("Camera release failed", exc_info=True)
-
-    def __enter__(self) -> "ResilientCamera":
-        if not self.open():
-            raise RuntimeError(f"Could not open camera source {self.source!r}")
-        return self
-
-    def __exit__(self, _exc_type, _exc, _tb) -> None:
-        self.release()
 
 
 __all__ = ["ResilientCamera"]

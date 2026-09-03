@@ -22,15 +22,18 @@ jobs:
         python: ["3.11", "3.12"]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: ${{ matrix.python }}
           cache: pip
       - name: Install system runtime dependencies
         run: sudo apt-get update && sudo apt-get install -y libgl1
-      - name: Install project
-        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+      - name: Install constrained project
+        run: >-
+          python -m pip install --upgrade pip &&
+          python -m pip install -c constraints-release.txt -e ".[dev]" &&
+          python -m pip check
       - name: Run production application self-test
         run: python main.py --self-test
       - name: Check OpenCV face APIs
@@ -40,7 +43,9 @@ jobs:
           assert hasattr(cv2.dnn, 'readNetFromONNX')"
       - name: Check repository hygiene
         run: python scripts/check_repository_hygiene.py
-      - name: Run focused lint
+      - name: Compile complete Python tree
+        run: python -m compileall -q main.py scripts src tests
+      - name: Run maintained-surface lint
         run: >-
           python -m ruff check
           main.py scripts
@@ -70,9 +75,13 @@ jobs:
           src/cli/train.py
           src/cli/take_attendance.py
           src/cli/view_attendance.py
+          src/ui/access_policy.py
+          src/ui/attendance_reporting.py
           src/ui/auth_gate.py
           src/ui/legacy_face_compat.py
           src/ui/attendance_view.py
+          src/ui/dashboard_view.py
+          src/ui/analytics_dashboard.py
           src/ui/student_registration.py
           src/ui/training_view.py
           src/ui/settings.py
@@ -90,6 +99,7 @@ jobs:
           tests/test_auth_system.py
           tests/test_config_backup.py
           tests/test_production_imports.py
+          tests/test_production_ui.py
       - name: Run tests
         run: python -m pytest -q
 
@@ -109,16 +119,19 @@ jobs:
             label: macos-x64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
           cache: pip
       - name: Install Linux runtime dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libgl1
-      - name: Install project
-        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+      - name: Install constrained project
+        run: >-
+          python -m pip install --upgrade pip &&
+          python -m pip install -c constraints-release.txt -e ".[dev]" &&
+          python -m pip check
       - name: Run platform regression tests
         run: >-
           python -m pytest -q
@@ -129,6 +142,7 @@ jobs:
           tests/test_auth_system.py
           tests/test_config_backup.py
           tests/test_production_imports.py
+          tests/test_production_ui.py
       - name: Build one-folder application
         run: python -m PyInstaller --clean --noconfirm face_attendance.spec
       - name: Smoke-test packaged application

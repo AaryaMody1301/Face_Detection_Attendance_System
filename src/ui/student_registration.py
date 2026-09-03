@@ -10,7 +10,9 @@ from typing import Any
 
 from src.core.database.compat_exports import export_legacy_student_csvs
 from src.core.database.service import DatabaseService
-from src.ui.legacy_student_registration import StudentRegistrationView as _LegacyStudentRegistrationView
+from src.ui.legacy_student_registration import (
+    StudentRegistrationView as _LegacyStudentRegistrationView,
+)
 
 
 class StudentRegistrationView(_LegacyStudentRegistrationView):

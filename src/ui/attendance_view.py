@@ -8,6 +8,7 @@ from typing import Any
 
 import cv2
 
+from src.core.camera import ResilientCamera
 from src.core.database.compat_exports import export_legacy_student_csvs
 from src.core.database.service import DatabaseService
 from src.core.face_engine import DEFAULT_GALLERY_PATH, FaceEngine
@@ -32,6 +33,38 @@ class AttendanceView(_LegacyAttendanceView):
         export_legacy_student_csvs(self.database)
         super().__init__(master=master, config=config, **kwargs)
         self.has_recognition_model = self.face_engine.load_model(DEFAULT_GALLERY_PATH)
+
+    def _initialize_camera(self) -> bool:
+        """Initialize a reconnecting camera without changing the retained UI loop."""
+        try:
+            self.logger.info("Initializing resilient camera...")
+            camera = ResilientCamera(self.camera_index)
+            if not camera.open():
+                self.master.after(0, self._camera_start_failed, "Failed to open camera")
+                return False
+            self.camera = camera
+
+            resolutions = [(640, 480), (1280, 720), (800, 600), (320, 240)]
+            for width, height in resolutions:
+                self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                ok, test_frame = self.camera.read()
+                if ok and test_frame is not None and test_frame.size > 0:
+                    self.logger.info("Camera ready at requested resolution %sx%s", width, height)
+                    break
+            else:
+                self.camera.release()
+                self.camera = None
+                self.master.after(0, self._camera_start_failed, "Failed to read camera frame")
+                return False
+
+            self.camera_running = True
+            self.master.after(0, self._camera_start_success)
+            return True
+        except (cv2.error, OSError, RuntimeError) as exc:
+            self.logger.error("Error initializing resilient camera: %s", exc)
+            self.master.after(0, self._camera_start_failed, str(exc))
+            return False
 
     def load_students(self) -> None:
         """Populate the recognition lookup from SQLite instead of students.csv."""

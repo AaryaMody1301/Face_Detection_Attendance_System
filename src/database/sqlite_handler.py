@@ -1,10 +1,10 @@
-"""Legacy SQLiteHandler adapter for the canonical repository."""
+"""Legacy SQLiteHandler adapter for the canonical database service."""
 
-from src.core.database.repository import AttendanceRepository
+from src.core.database.service import DatabaseService
 
 
-class SQLiteHandler(AttendanceRepository):
-    """Backward-compatible name for :class:`AttendanceRepository`."""
+class SQLiteHandler(DatabaseService):
+    """Backward-compatible name for :class:`DatabaseService`."""
 
 
 __all__ = ["SQLiteHandler"]

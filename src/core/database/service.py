@@ -14,6 +14,95 @@ from src.core.database.repository import AttendanceRepository
 class DatabaseService(AttendanceRepository):
     """Repository plus compatibility helpers used by legacy UI/model surfaces."""
 
+    def _create_schema(self) -> None:
+        """Create canonical objects without ``executescript`` transaction side effects."""
+        statements = (
+            """
+            CREATE TABLE IF NOT EXISTS students (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                enrollment TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
+                email TEXT,
+                department TEXT,
+                year TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_updated TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1))
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS subjects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS attendance (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                student_id INTEGER NOT NULL,
+                subject_id INTEGER NOT NULL,
+                date TEXT NOT NULL,
+                time TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'Present',
+                method TEXT NOT NULL DEFAULT 'face',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+                FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE RESTRICT,
+                UNIQUE(student_id, subject_id, date)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance(date)",
+            "CREATE INDEX IF NOT EXISTS idx_attendance_student ON attendance(student_id)",
+            "CREATE INDEX IF NOT EXISTS idx_attendance_subject ON attendance(subject_id)",
+        )
+        for statement in statements:
+            self.conn.execute(statement)
+        self.conn.execute("INSERT OR IGNORE INTO subjects(name) VALUES ('General')")
+
+    def _migrate_schema(self) -> None:
+        """Wrap destructive legacy upgrades in an explicit SQLite transaction."""
+        attendance_cols = (
+            {
+                row[1]
+                for row in self.conn.execute("PRAGMA table_info(attendance)").fetchall()
+            }
+            if self._table_exists("attendance")
+            else set()
+        )
+        student_cols = (
+            {row[1] for row in self.conn.execute("PRAGMA table_info(students)").fetchall()}
+            if self._table_exists("students")
+            else set()
+        )
+        canonical = (
+            {"id", "enrollment", "name", "is_active"}.issubset(student_cols)
+            and {"student_id", "subject_id", "date", "time", "status"}.issubset(
+                attendance_cols
+            )
+        )
+        has_legacy_tables = any(
+            self._table_exists(name)
+            for name in ("students", "attendance", "subjects", "courses")
+        )
+
+        if canonical or not has_legacy_tables:
+            super()._migrate_schema()
+            return
+
+        self.conn.execute("PRAGMA foreign_keys = OFF")
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            super()._migrate_schema()
+        except Exception:
+            if self.conn.in_transaction:
+                self.conn.rollback()
+            raise
+        finally:
+            if self.conn.in_transaction:
+                self.conn.commit()
+            self.conn.execute("PRAGMA foreign_keys = ON")
+
     def student_exists(self, enrollment: str) -> bool:
         row = self.conn.execute(
             "SELECT 1 FROM students WHERE enrollment=? LIMIT 1",

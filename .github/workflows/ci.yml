@@ -15,19 +15,24 @@ concurrency:
 
 jobs:
   quality:
+    name: quality-py${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12"]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
           cache: pip
       - name: Install system runtime dependencies
         run: sudo apt-get update && sudo apt-get install -y libgl1
       - name: Install project
         run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
-      - name: Run headless diagnostics
-        run: python main.py --diagnostics
+      - name: Run production application self-test
+        run: python main.py --self-test
       - name: Check OpenCV face APIs
         run: >-
           python -c "import cv2; assert hasattr(cv2, 'FaceDetectorYN');
@@ -39,12 +44,16 @@ jobs:
         run: >-
           python -m ruff check
           main.py scripts
+          src/auth/auth_system.py
+          src/auth/simple_auth.py
           src/core/paths.py
           src/core/runtime.py
+          src/core/version.py
           src/core/camera.py
           src/core/face_models.py
           src/core/face_engine.py
           src/core/liveness.py
+          src/core/utils/config_manager.py
           src/core/face_recognition/face_detector.py
           src/core/database/repository.py
           src/core/database/service.py
@@ -57,14 +66,19 @@ jobs:
           src/face_recognition/detector.py
           src/face_recognition/enhanced_detector.py
           src/face_recognition/fixed_detector.py
+          src/cli/main.py
           src/cli/train.py
           src/cli/take_attendance.py
+          src/cli/view_attendance.py
+          src/ui/auth_gate.py
           src/ui/legacy_face_compat.py
-          src/ui/classic_face_compat.py
-          src/ui/classic_launcher.py
           src/ui/attendance_view.py
           src/ui/student_registration.py
           src/ui/training_view.py
+          src/ui/settings.py
+          src/ui/modern_launcher.py
+          src/utils/backup_manager.py
+          src/utils/config_manager.py
           tests/test_detector.py
           tests/test_face_engine.py
           tests/test_liveness.py
@@ -73,6 +87,9 @@ jobs:
           tests/test_db_handler.py
           tests/test_repository.py
           tests/test_ui_adapters.py
+          tests/test_auth_system.py
+          tests/test_config_backup.py
+          tests/test_production_imports.py
       - name: Run tests
         run: python -m pytest -q
 
@@ -103,8 +120,16 @@ jobs:
       - name: Install project
         run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
       - name: Run platform regression tests
-        run: python -m pytest -q tests/test_camera.py tests/test_runtime.py tests/test_face_engine.py tests/test_liveness.py
+        run: >-
+          python -m pytest -q
+          tests/test_camera.py
+          tests/test_runtime.py
+          tests/test_face_engine.py
+          tests/test_liveness.py
+          tests/test_auth_system.py
+          tests/test_config_backup.py
+          tests/test_production_imports.py
       - name: Build one-folder application
         run: python -m PyInstaller --clean --noconfirm face_attendance.spec
-      - name: Smoke-test packaged diagnostics
+      - name: Smoke-test packaged application
         run: python scripts/smoke_package.py

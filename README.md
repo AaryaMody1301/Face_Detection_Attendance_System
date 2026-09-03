@@ -2,7 +2,7 @@
 
 A local-first desktop attendance system built with Python, OpenCV, and CustomTkinter. Automatic attendance uses **YuNet face detection → MiniFAS passive liveness → SFace identity matching → SQLite persistence**. Recognition, liveness, authentication, and attendance data all remain local; no paid recognition or cloud service is required.
 
-![Python](https://img.shields.io/badge/python-3.10--3.12-blue)
+![Python](https://img.shields.io/badge/python-3.11--3.12-blue)
 ![Version](https://img.shields.io/badge/version-1.5.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![OpenCV](https://img.shields.io/badge/OpenCV-4.x-red)
@@ -45,7 +45,7 @@ Passive RGB liveness reduces common print/screen attacks, but it is not a certif
 
 Requirements:
 
-- Python 3.10, 3.11, or 3.12
+- Python 3.11 or 3.12
 - A webcam for enrollment/attendance
 - Internet access once for default model downloads, or verified local ONNX model files
 
@@ -205,7 +205,7 @@ python -m ruff check main.py scripts src tests
 python -m pytest -q
 ```
 
-CI runs source tests on Python 3.10 and 3.12, then builds and smoke-tests frozen bundles on:
+CI runs source tests on Python 3.11 and 3.12, then builds and smoke-tests frozen bundles on:
 
 - Linux x64
 - Windows x64

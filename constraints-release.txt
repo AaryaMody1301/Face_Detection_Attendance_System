@@ -13,5 +13,5 @@ tkcalendar==1.6.1
 python-dateutil==2.9.0.post0
 PyYAML==6.0.3
 pytest==9.1.1
-ruff==0.16.5
+ruff==0.16.6
 pyinstaller==6.22.2
